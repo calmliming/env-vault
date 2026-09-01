@@ -1,0 +1,11 @@
+# pnpm 11 默认拦截依赖的 install 脚本。这两个包必须放行，否则：
+#   electron —— 不会下载 Electron 二进制，node_modules/electron/dist 为空；
+#   esbuild  —— 不会下载平台二进制，verify:core 和 vite 都跑不起来。
+# 二进制的下载源见 .npmrc（本机直连 GitHub 超时，走 npmmirror）。
+allowBuilds:
+  electron: true
+  esbuild: true
+# pnpm 11 默认不装"刚发布不久"的版本（供应链保护）。下面这条是 pnpm 自己加的豁免，
+# 表示这个版本已经被明确选定。升级 Electron 时 pnpm 会继续往这里追加。
+minimumReleaseAgeExclude:
+  - electron@44.1.0

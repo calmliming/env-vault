@@ -1,0 +1,36 @@
+{
+  "name": "envvault",
+  "version": "0.1.0",
+  "private": true,
+  "description": "本地优先的项目配置与模型凭据管理工具",
+  "main": "./out/main/index.js",
+  "type": "module",
+  "packageManager": "pnpm@11.22.0",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "pnpm run typecheck && electron-vite build",
+    "start": "electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "test": "node --test \"src/main/**/*.test.ts\"",
+    "verify:core": "esbuild scripts/verify-core.ts --bundle --platform=node --format=esm --target=node22 --outfile=out/verify/index.mjs --external:electron --alias:@shared=./src/shared && electron out/verify/index.mjs",
+    "verify:ui": "node scripts/verify-ui.mjs",
+    "verify": "pnpm run test && pnpm run build && pnpm run verify:core && pnpm run verify:ui"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@vitejs/plugin-react": "^4.4.0",
+    "electron": "^44.1.0",
+    "electron-builder": "^25.1.8",
+    "electron-vite": "^3.1.0",
+    "esbuild": "^0.25.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "typescript": "^5.8.0",
+    "vite": "^6.3.0"
+  },
+  "dependencies": {
+    "chokidar": "^5.0.0"
+  }
+}

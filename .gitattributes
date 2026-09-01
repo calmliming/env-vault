@@ -1,0 +1,8 @@
+# 仓库内一律 LF。源码本来就是 LF，不统一的话 Windows 上 checkout 会变成 CRLF，
+# 下一次提交就会出现整文件的换行符 diff，把真正的改动淹掉。
+* text=auto eol=lf
+
+# 二进制文件不做换行符转换
+*.png binary
+*.ico binary
+*.icns binary

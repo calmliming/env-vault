@@ -1,0 +1,167 @@
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { currentFileHash, findGitRoot, hashText, scanProject } from './scan.ts'
+
+function makeFixture(): string {
+  const root = mkdtempSync(join(tmpdir(), 'envvault-scan-'))
+
+  writeFileSync(join(root, '.env'), 'SHARED=1\nPORT=3000\n')
+  writeFileSync(join(root, '.env.local'), 'OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz01\n')
+  writeFileSync(join(root, '.env.example'), 'SHARED=\nPORT=\n')
+  writeFileSync(join(root, 'package.json'), '{}')
+  writeFileSync(join(root, '.environment'), 'NOT_AN_ENV_FILE=1\n')
+
+  mkdirSync(join(root, 'apps', 'web'), { recursive: true })
+  writeFileSync(join(root, 'apps', 'web', '.env.production'), 'API_URL=https://api.example.com\n')
+
+  // 依赖目录里的 .env 不该被收进来
+  mkdirSync(join(root, 'node_modules', 'some-pkg'), { recursive: true })
+  writeFileSync(join(root, 'node_modules', 'some-pkg', '.env'), 'GHOST=1\n')
+
+  mkdirSync(join(root, 'dist'), { recursive: true })
+  writeFileSync(join(root, 'dist', '.env'), 'BUILT=1\n')
+
+  return root
+}
+
+test('扫描发现所有 .env* 文件，跳过依赖与构建目录', () => {
+  const root = makeFixture()
+  try {
+    const result = scanProject(root)
+    const paths = result.files.map((f) => f.relativePath).sort()
+
+    assert.deepEqual(paths, [
+      '.env',
+      '.env.example',
+      '.env.local',
+      'apps/web/.env.production'
+    ])
+    assert.equal(result.truncated, false)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('相对路径始终用正斜杠，不出现反斜杠', () => {
+  const root = makeFixture()
+  try {
+    const nested = scanProject(root).files.find((f) => f.fileName === '.env.production')
+    assert.equal(nested?.relativePath, 'apps/web/.env.production')
+    assert.equal(nested?.relativePath.includes('\\'), false)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('环境名与模板标记来自文件名', () => {
+  const root = makeFixture()
+  try {
+    const byName = new Map(scanProject(root).files.map((f) => [f.fileName, f]))
+    assert.equal(byName.get('.env')?.environment, 'default')
+    assert.equal(byName.get('.env.local')?.environment, 'local')
+    assert.equal(byName.get('.env.production')?.environment, 'production')
+    assert.equal(byName.get('.env.example')?.isTemplate, true)
+    assert.equal(byName.get('.env')?.isTemplate, false)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('条目带上分类结果与原始行文本', () => {
+  const root = makeFixture()
+  try {
+    const local = scanProject(root).files.find((f) => f.fileName === '.env.local')
+    const entry = local?.entries[0]
+    assert.equal(entry?.key, 'OPENAI_API_KEY')
+    assert.equal(entry?.sensitivity, 'high')
+    assert.equal(entry?.valueType, 'secret')
+    assert.equal(entry?.lineNumber, 1)
+    // original_format 必须是完整的原始行，写回时靠它还原格式
+    assert.equal(entry?.originalFormat, 'OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz01')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('文件哈希与内容一致，可用于外部修改检测', () => {
+  const root = makeFixture()
+  try {
+    const before = scanProject(root).files.find((f) => f.fileName === '.env')
+    assert.equal(before?.fileHash, hashText('SHARED=1\nPORT=3000\n'))
+    assert.equal(currentFileHash(join(root, '.env')), before?.fileHash)
+
+    writeFileSync(join(root, '.env'), 'SHARED=2\nPORT=3000\n')
+    assert.notEqual(currentFileHash(join(root, '.env')), before?.fileHash)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('文件不存在时哈希返回 null 而不是抛异常', () => {
+  assert.equal(currentFileHash(join(tmpdir(), 'definitely-not-here-9f3a', '.env')), null)
+})
+
+test('深度上限生效并标记 truncated', () => {
+  const root = mkdtempSync(join(tmpdir(), 'envvault-depth-'))
+  try {
+    mkdirSync(join(root, 'a', 'b', 'c'), { recursive: true })
+    writeFileSync(join(root, 'a', 'b', 'c', '.env'), 'DEEP=1\n')
+
+    assert.equal(scanProject(root, { maxDepth: 1 }).files.length, 0)
+    assert.equal(scanProject(root, { maxDepth: 1 }).truncated, true)
+    assert.equal(scanProject(root, { maxDepth: 3 }).files.length, 1)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('文件数上限生效，浅层文件优先保留', () => {
+  const root = mkdtempSync(join(tmpdir(), 'envvault-cap-'))
+  try {
+    writeFileSync(join(root, '.env'), 'A=1\n')
+    mkdirSync(join(root, 'deep'), { recursive: true })
+    writeFileSync(join(root, 'deep', '.env'), 'B=1\n')
+
+    const capped = scanProject(root, { maxFiles: 1 })
+    assert.equal(capped.files.length, 1)
+    assert.equal(capped.files[0]?.relativePath, '.env')
+    assert.equal(capped.truncated, true)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('找不到 Git 仓库时 gitRoot 为 null，找得到时指向仓库根', () => {
+  const root = mkdtempSync(join(tmpdir(), 'envvault-git-'))
+  try {
+    writeFileSync(join(root, '.env'), 'A=1\n')
+    assert.equal(scanProject(root).gitRoot, null)
+
+    // .git 在 worktree / submodule 里是文件不是目录，所以只判存在
+    writeFileSync(join(root, '.git'), 'gitdir: ../elsewhere\n')
+    assert.equal(findGitRoot(root), root)
+
+    mkdirSync(join(root, 'nested'), { recursive: true })
+    assert.equal(findGitRoot(join(root, 'nested')), root)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('单个文件读取失败不会让整次扫描失败', () => {
+  const root = mkdtempSync(join(tmpdir(), 'envvault-bad-'))
+  try {
+    writeFileSync(join(root, '.env'), 'OK=1\n')
+    // 用目录冒充 .env 文件名：readdir 会把它当目录，不会进 files
+    mkdirSync(join(root, '.env.weird'), { recursive: true })
+
+    const result = scanProject(root)
+    assert.equal(result.files.length, 1)
+    assert.equal(result.files[0]?.error, null)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})

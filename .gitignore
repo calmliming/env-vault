@@ -1,0 +1,17 @@
+node_modules/
+out/
+dist/
+release/
+*.tsbuildinfo
+*.log
+
+# 早期原型工作流留下的派生产物：基线副本、逐行 diff、验证记录、回滚脚本。
+# 它们是从 index.html / DEVELOPMENT_PLAN.md 派生出来的，留在本地作历史，不进仓库。
+*baseline*
+*.diff.txt
+*VERIFICATION.txt
+*ROLLBACK.sh
+.DS_Store
+.env
+.env.*
+!.env.example

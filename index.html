@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f4f1eb" />
+    <title>EnvVault · 配置工作台</title>
+    <style>
+      :root {
+        --canvas: #f6f6f3;
+        --surface: #fafaf8;
+        --surface-strong: #ffffff;
+        --ink: #262b27;
+        --muted: #7b817b;
+        --line: #e5e5e1;
+        --line-strong: #d3d4ce;
+        --green: #547063;
+        --green-soft: #edf2ee;
+        --orange: #956e57;
+        --orange-soft: #f3ece8;
+        --blue: #667680;
+        --blue-soft: #eef1f2;
+        --yellow: #81754e;
+        --yellow-soft: #f2f0e7;
+        --sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      }
+
+      * { box-sizing: border-box; }
+      html { background: var(--canvas); }
+      body { margin: 0; color: var(--ink); background: var(--canvas); font-family: var(--sans); -webkit-font-smoothing: antialiased; }
+      body::before { content: ""; position: fixed; inset: 0 auto 0 0; z-index: 50; width: 2px; background: #708079; pointer-events: none; }
+      button, input { font: inherit; }
+      button { cursor: pointer; }
+      .app-shell { min-height: 100dvh; display: grid; grid-template-columns: 256px minmax(0, 1fr); }
+      .sidebar { display: flex; flex-direction: column; border-right: 1px solid var(--line); background: #f0f0ed; color: var(--ink); padding: 24px 16px 18px; }
+      .brand { display: flex; align-items: center; gap: 11px; padding: 0 10px 26px; }
+      .brand-mark { position: relative; width: 34px; height: 34px; border: 1px solid #343a35; border-radius: 9px; display: grid; place-items: center; overflow: hidden; background: #ffffff; }
+      .brand-mark::before { content: ""; position: absolute; inset: 6px; border: 1.5px solid var(--green); border-radius: 4px; clip-path: polygon(0 0, 100% 0, 100% 72%, 72% 100%, 0 100%); }
+      .brand-mark::after { content: ""; position: absolute; width: 8px; height: 8px; border: 1.5px solid var(--ink); border-radius: 2px; transform: rotate(45deg); top: 11px; left: 11px; background: #ffffff; }
+      .brand-mark-core { position: relative; z-index: 1; width: 3px; height: 3px; border-radius: 50%; background: var(--ink); }
+      .brand-name { font-weight: 700; letter-spacing: 0; }
+      .brand-meta { display: block; margin-top: 2px; color: var(--muted); font: 10px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+      .nav-label { color: #9a9e98; font: 10px var(--mono); letter-spacing: .12em; text-transform: uppercase; padding: 13px 10px 8px; }
+      .nav { display: grid; gap: 3px; scrollbar-width: none; }
+      .nav::-webkit-scrollbar { display: none; }
+      .nav button { border: 0; background: transparent; color: #686d67; text-align: left; border-radius: 7px; padding: 10px 11px; display: flex; align-items: center; gap: 10px; font-size: 13px; transition: .18s ease; }
+      .nav button:hover { background: #e6e7e3; color: var(--ink); }
+      .nav button.active { background: #e1e4e0; color: var(--ink); }
+      .nav-icon { width: 16px; text-align: center; font: 14px var(--mono); opacity: .85; }
+      .project-list { display: grid; gap: 3px; margin-top: 5px; }
+      .project { display: flex; align-items: center; gap: 9px; padding: 9px 10px; color: #686d67; border-radius: 7px; font-size: 12px; }
+      .project.active { color: var(--ink); background: #fafaf8; }
+      .project-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
+      .project:nth-child(2) .project-dot { background: var(--blue); }
+      .project:nth-child(3) .project-dot { background: var(--orange); }
+      .project-path { margin-left: auto; color: #9da29c; font: 10px var(--mono); }
+      .sidebar-foot { margin-top: auto; border-top: 1px solid var(--line); padding: 16px 10px 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
+      .vault-state { display: flex; align-items: center; gap: 7px; color: var(--green); font-weight: 600; }
+      .state-dot { width: 6px; height: 6px; background: var(--green); border-radius: 50%; }
+
+      .main { min-width: 0; padding: 0 38px 44px; }
+      .topbar { height: 75px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); }
+      .crumb { color: var(--muted); font-size: 12px; }
+      .crumb strong { color: var(--ink); font-weight: 600; }
+      .top-actions { display: flex; align-items: center; gap: 9px; }
+      .icon-btn, .outline-btn, .primary-btn { border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink); border-radius: 6px; transition: .18s ease; }
+      .icon-btn { width: 33px; height: 33px; display: grid; place-items: center; font: 16px var(--mono); }
+      .outline-btn { padding: 8px 12px; font-size: 12px; }
+      .primary-btn { border-color: var(--ink); background: var(--ink); color: white; padding: 9px 14px; font-size: 12px; }
+      .icon-btn:hover, .outline-btn:hover { border-color: var(--ink); background: white; }
+      .primary-btn:hover { background: #3b403c; }
+      .page-head { display: flex; justify-content: space-between; align-items: end; gap: 20px; padding: 31px 0 25px; }
+      .eyebrow { color: var(--green); font: 10px var(--mono); letter-spacing: .13em; text-transform: uppercase; }
+      h1 { font-size: 35px; letter-spacing: 0; line-height: 1.05; margin: 8px 0 9px; }
+      .page-subtitle { margin: 0; color: var(--muted); font-size: 13px; }
+      .head-actions { display: flex; gap: 8px; align-items: center; }
+      .metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border: 1px solid var(--line); background: var(--surface-strong); }
+      .metric { padding: 17px 18px; min-height: 88px; border-right: 1px solid var(--line); }
+      .metric:last-child { border-right: 0; }
+      .metric-label { color: var(--muted); font-size: 11px; }
+      .metric-value { margin-top: 9px; font: 500 25px var(--mono); letter-spacing: 0; }
+      .metric-note { margin-left: 5px; color: var(--green); font: 10px var(--mono); }
+
+      .workspace-grid { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(260px, .75fr); gap: 17px; margin-top: 17px; }
+      .panel { border: 1px solid var(--line); background: var(--surface-strong); }
+      .panel-head { min-height: 61px; padding: 16px 18px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--line); }
+      .panel-title { font-size: 13px; font-weight: 650; letter-spacing: 0; }
+      .panel-kicker { color: var(--muted); font-size: 11px; margin-top: 3px; }
+      .env-tabs { display: flex; align-items: center; gap: 4px; }
+      .env-tab { border: 0; background: transparent; color: var(--muted); padding: 7px 9px; font: 11px var(--mono); border-radius: 4px; }
+      .env-tab:hover { color: var(--ink); background: var(--canvas); }
+      .env-tab.active { color: var(--ink); background: var(--yellow-soft); }
+      .table-tools { display: flex; justify-content: space-between; align-items: center; padding: 12px 15px; gap: 12px; border-bottom: 1px solid var(--line); }
+      .search { display: flex; align-items: center; gap: 7px; min-width: 190px; color: var(--muted); border: 1px solid var(--line); background: var(--canvas); border-radius: 5px; padding: 7px 9px; }
+      .search span { font: 13px var(--mono); }
+      .search input { width: 100%; border: 0; outline: 0; background: transparent; color: var(--ink); font-size: 11px; }
+      .search input::placeholder { color: #a1a49e; }
+      .tool-note { color: var(--muted); font-size: 11px; }
+      .config-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+      .config-table th { color: #9a9e98; background: #fcfbf8; text-align: left; padding: 9px 15px; border-bottom: 1px solid var(--line); font: 10px var(--mono); letter-spacing: .07em; text-transform: uppercase; }
+      .config-table td { padding: 13px 15px; border-bottom: 1px solid #eeeae3; vertical-align: middle; font-size: 12px; }
+      .config-table tr:last-child td { border-bottom: 0; }
+      .key-name { font: 12px var(--mono); color: #313631; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .value-cell { display: flex; align-items: center; gap: 8px; min-width: 0; }
+      .value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #666d66; font: 11px var(--mono); }
+      .value.masked { letter-spacing: .12em; color: #888d87; }
+      .mini-btn { flex: 0 0 auto; border: 0; background: transparent; color: #9a9e98; font: 13px var(--mono); padding: 2px; }
+      .mini-btn:hover { color: var(--ink); }
+      .type-tag, .source-tag { display: inline-flex; align-items: center; border-radius: 3px; padding: 4px 6px; font: 10px var(--mono); }
+      .type-tag.secret { background: var(--orange-soft); color: #a4562f; }
+      .type-tag.url { background: var(--blue-soft); color: var(--blue); }
+      .type-tag.number { background: var(--yellow-soft); color: var(--yellow); }
+      .source-tag { color: var(--muted); background: #f1f0ec; }
+      .status { display: inline-flex; align-items: center; gap: 5px; color: var(--green); font-size: 11px; }
+      .status-dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+      .status.warn { color: var(--orange); }
+      .row-action { color: #969b95; border: 0; background: transparent; font: 16px var(--mono); }
+      .row-action:hover { color: var(--ink); }
+
+      .side-stack { display: grid; gap: 17px; align-content: start; }
+      .credential-list { padding: 5px 17px 11px; }
+      .credential { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 13px 0; border-bottom: 1px solid #eeeae3; }
+      .credential:last-child { border-bottom: 0; }
+      .provider-mark { width: 32px; height: 32px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 7px; background: var(--canvas); color: var(--ink); font: 700 11px var(--mono); }
+      .credential-name { font-size: 12px; font-weight: 650; }
+      .credential-meta { margin-top: 4px; color: var(--muted); font: 10px var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .credential-state { text-align: right; color: var(--green); font: 10px var(--mono); }
+      .credential-state .state-line { display: block; margin-top: 4px; color: var(--muted); }
+      .health { padding: 15px 17px 17px; }
+      .health-item { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; padding: 12px 0; border-bottom: 1px solid #eeeae3; }
+      .health-item:last-child { border-bottom: 0; padding-bottom: 0; }
+      .health-name { font-size: 12px; }
+      .health-path { margin-top: 4px; color: var(--muted); font: 10px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .health-badge { padding: 4px 6px; border-radius: 3px; font: 10px var(--mono); }
+      .health-badge.ok { color: var(--green); background: var(--green-soft); }
+      .health-badge.warn { color: #a4562f; background: var(--orange-soft); }
+      .health-badge.neutral { color: var(--muted); background: #f1f0ec; }
+      .activity { padding: 5px 17px 11px; }
+      .activity-item { display: grid; grid-template-columns: 7px 1fr auto; gap: 9px; padding: 11px 0; border-bottom: 1px solid #eeeae3; align-items: start; }
+      .activity-item:last-child { border-bottom: 0; }
+      .activity-dot { width: 6px; height: 6px; margin-top: 4px; border-radius: 50%; background: var(--green); }
+      .activity-copy { font-size: 11px; line-height: 1.45; }
+      .activity-copy strong { font-weight: 650; }
+      .activity-time { color: #a3a69f; font: 10px var(--mono); }
+      .page-section { display: none; }
+      .page-section.active { display: block; }
+      .empty-section { border: 1px solid var(--line); background: var(--surface-strong); padding: 56px 28px; margin-top: 17px; }
+      .empty-section h2 { font-size: 18px; letter-spacing: 0; margin: 0 0 8px; }
+      .empty-section p { color: var(--muted); font-size: 12px; margin: 0; }
+      .toast { position: fixed; right: 24px; bottom: 24px; max-width: min(340px, calc(100vw - 48px)); border: 1px solid var(--ink); background: var(--ink); color: white; padding: 11px 14px; border-radius: 5px; font-size: 12px; opacity: 0; transform: translateY(8px); pointer-events: none; transition: .2s ease; }
+      .toast.show { opacity: 1; transform: translateY(0); }
+      .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+      .modal-layer { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; padding: 24px; opacity: 0; pointer-events: none; transition: opacity .2s ease; }
+      .modal-layer.open { opacity: 1; pointer-events: auto; }
+      .modal-backdrop { position: absolute; inset: 0; background: rgba(38,43,39,.2); }
+      .modal { position: relative; width: min(520px, 100%); max-height: min(720px, calc(100dvh - 48px)); overflow: auto; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface-strong); box-shadow: 0 12px 28px rgba(38,43,39,.09); transform: translateY(9px) scale(.985); transition: transform .22s cubic-bezier(.16,1,.3,1); }
+      .modal-layer.open .modal { transform: translateY(0) scale(1); }
+      .modal-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding: 23px 24px 18px; border-bottom: 1px solid var(--line); }
+      .modal-head h2 { margin: 6px 0 0; font-size: 22px; letter-spacing: 0; }
+      .modal-close { width: 30px; height: 30px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); color: var(--muted); font: 18px var(--mono); }
+      .modal-close:hover { color: var(--ink); border-color: var(--ink); background: white; }
+      .modal-body { padding: 21px 24px 24px; }
+      .modal-copy { color: var(--muted); font-size: 12px; line-height: 1.6; margin: 0 0 18px; }
+      .form-grid { display: grid; gap: 14px; }
+      .form-grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .field { display: grid; gap: 7px; }
+      .field label { color: #5f655f; font-size: 11px; font-weight: 600; }
+      .field input, .field select { width: 100%; border: 1px solid var(--line-strong); border-radius: 5px; background: var(--canvas); color: var(--ink); padding: 10px 11px; outline: none; font-size: 12px; }
+      .field input:focus, .field select:focus { border-color: var(--green); box-shadow: 0 0 0 3px rgba(61,114,95,.12); }
+      .field small { color: var(--muted); font: 10px var(--mono); line-height: 1.45; }
+      .path-picker { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px; }
+      .path-picker .outline-btn { white-space: nowrap; }
+      .path-picker input[data-selected="true"] { border-color: var(--green); background: var(--green-soft); }
+      .check-row { display: flex; align-items: flex-start; gap: 9px; color: #5f655f; font-size: 11px; line-height: 1.45; }
+      .check-row input { accent-color: var(--green); margin-top: 2px; }
+      .modal-divider { height: 1px; background: var(--line); margin: 19px 0; }
+      .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 22px; }
+      .modal-actions .outline-btn, .modal-actions .primary-btn { min-width: 76px; }
+      .diff-list { border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+      .diff-row { display: grid; grid-template-columns: 22px 1fr auto; align-items: center; gap: 9px; padding: 11px 12px; border-bottom: 1px solid #eeeae3; }
+      .diff-row:last-child { border-bottom: 0; }
+      .diff-row input { accent-color: var(--green); }
+      .diff-key { font: 11px var(--mono); }
+      .diff-value { color: var(--muted); font: 10px var(--mono); margin-top: 3px; }
+      .diff-state { color: var(--orange); font: 10px var(--mono); }
+      .shortcut-row { display: flex; gap: 6px; align-items: center; color: var(--muted); font-size: 11px; }
+      kbd { border: 1px solid var(--line-strong); border-bottom-width: 2px; border-radius: 4px; background: var(--canvas); color: var(--ink); padding: 2px 6px; font: 10px var(--mono); }
+      .notice-list { display: grid; gap: 0; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+      .notice { display: grid; grid-template-columns: 8px 1fr auto; gap: 10px; align-items: start; padding: 12px; border-bottom: 1px solid #eeeae3; }
+      .notice:last-child { border-bottom: 0; }
+      .notice-dot { width: 6px; height: 6px; margin-top: 5px; border-radius: 50%; background: var(--orange); }
+      .notice strong { font-size: 11px; }
+      .notice p { margin: 4px 0 0; color: var(--muted); font-size: 10px; line-height: 1.45; }
+      .notice time { color: #a3a69f; font: 10px var(--mono); }
+      :focus-visible { outline: 2px solid var(--green); outline-offset: 3px; }
+      @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
+      }
+
+      @media (max-width: 1100px) {
+        .app-shell { grid-template-columns: 220px minmax(0, 1fr); }
+        .main { padding-inline: 24px; }
+        .workspace-grid { grid-template-columns: 1fr; }
+        .side-stack { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .side-stack .panel:last-child { grid-column: 1 / -1; }
+      }
+      @media (max-width: 720px) {
+        .app-shell { display: block; }
+        .sidebar { border-right: 0; border-bottom: 1px solid var(--line); padding: 14px 14px 12px; }
+        .brand { padding: 0 5px 13px; }
+        .nav-label, .project-list, .sidebar-foot { display: none; }
+        .nav { display: flex; overflow-x: auto; gap: 4px; padding-bottom: 1px; }
+        .nav button { flex: 0 0 auto; padding: 8px 10px; }
+        .main { padding: 0 14px 30px; }
+        .topbar { height: 59px; }
+        .page-head { display: block; padding: 24px 0 19px; }
+        h1 { font-size: 28px; }
+        .head-actions { margin-top: 17px; }
+        .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .metric:nth-child(2) { border-right: 0; }
+        .metric:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
+        .workspace-grid { margin-top: 13px; }
+        .side-stack { grid-template-columns: 1fr; }
+        .side-stack .panel:last-child { grid-column: auto; }
+        .panel-head { align-items: flex-start; }
+        .table-tools { align-items: stretch; flex-direction: column; }
+        .search { width: 100%; }
+        .tool-note { text-align: right; }
+        .config-table { min-width: 690px; }
+        .panel.table-panel { overflow-x: auto; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand"><div class="brand-mark" aria-label="EnvVault logo"><span class="brand-mark-core"></span></div><div><div class="brand-name">EnvVault</div><span class="brand-meta">local workspace</span></div></div>
+        <div class="nav-label">工作台</div>
+        <nav class="nav" aria-label="主导航">
+          <button class="active" data-section="overview"><span class="nav-icon">▦</span>配置总览</button>
+          <button data-section="credentials"><span class="nav-icon">⌁</span>模型凭据</button>
+          <button data-section="security"><span class="nav-icon">◇</span>安全检查</button>
+          <button data-section="activity"><span class="nav-icon">↺</span>操作记录</button>
+        </nav>
+        <div class="nav-label">已连接项目</div>
+        <div class="project-list"><div class="project active"><span class="project-dot"></span><span>musegen-one</span><span class="project-path">web</span></div><div class="project"><span class="project-dot"></span><span>ai-automusic</span><span class="project-path">root</span></div><div class="project"><span class="project-dot"></span><span>ai_manager_nextjs</span><span class="project-path">app</span></div></div>
+        <div class="sidebar-foot"><div class="vault-state"><span class="state-dot"></span>本地 Vault 已解锁</div><div>最后同步 · 刚刚</div></div>
+      </aside>
+
+      <main class="main">
+        <header class="topbar"><div class="crumb">工作台 / <strong id="crumb-label">配置总览</strong></div><div class="top-actions"><button class="icon-btn" title="搜索">⌕</button><button class="icon-btn" title="通知">◌</button><button class="primary-btn" id="add-project">+ 添加项目</button></div></header>
+
+        <section class="page-section active" id="overview">
+          <div class="page-head"><div><div class="eyebrow">项目配置 · musegen-one</div><h1>开发环境</h1><p class="page-subtitle">记录 4 个配置文件中的全部变量，敏感值只在需要时显式展示。</p></div><div class="head-actions"><button class="outline-btn" id="scan-files">重新扫描</button><button class="outline-btn" id="sync-config">同步到文件</button></div></div>
+          <div class="metrics"><div class="metric"><div class="metric-label">已记录变量</div><div class="metric-value">48 <span class="metric-note">+3</span></div></div><div class="metric"><div class="metric-label">模型凭据</div><div class="metric-value">06</div></div><div class="metric"><div class="metric-label">待处理差异</div><div class="metric-value">02 <span class="metric-note" style="color:var(--orange)">需看</span></div></div><div class="metric"><div class="metric-label">Git 风险项</div><div class="metric-value">00 <span class="metric-note">干净</span></div></div></div>
+
+          <div class="workspace-grid">
+            <section class="panel table-panel"><div class="panel-head"><div><div class="panel-title">环境变量</div><div class="panel-kicker">.env.local · 24 项</div></div><div class="env-tabs" role="tablist" aria-label="环境"><button class="env-tab active" data-env="development">development</button><button class="env-tab" data-env="test">test</button><button class="env-tab" data-env="production">production</button></div></div><div class="table-tools"><label class="search"><span>⌕</span><span class="sr-only">搜索变量</span><input id="config-search" placeholder="搜索变量名或来源" /></label><span class="tool-note" id="env-note">已与本地文件保持一致</span></div>
+              <table class="config-table"><thead><tr><th style="width:27%">变量名</th><th style="width:34%">值</th><th style="width:13%">类型</th><th style="width:14%">来源</th><th style="width:12%">状态</th></tr></thead><tbody id="config-rows">
+                <tr><td><div class="key-name">DATABASE_URL</div></td><td><div class="value-cell"><span class="value masked" data-secret="postgres://vault_user:••••••@db.internal:5432/musegen">••••••••••••••••••</span><button class="mini-btn reveal" title="显示或隐藏">◉</button><button class="mini-btn copy" title="复制">□</button></div></td><td><span class="type-tag secret">secret</span></td><td><span class="source-tag">.env.local</span></td><td><span class="status"><span class="status-dot"></span>已同步</span></td></tr>
+                <tr><td><div class="key-name">NEXT_PUBLIC_API_URL</div></td><td><div class="value-cell"><span class="value">https://api.musegen.dev/v1</span><button class="mini-btn copy" title="复制">□</button></div></td><td><span class="type-tag url">url</span></td><td><span class="source-tag">.env</span></td><td><span class="status"><span class="status-dot"></span>已同步</span></td></tr>
+                <tr><td><div class="key-name">OPENAI_BASE_URL</div></td><td><div class="value-cell"><span class="value">https://api.openai.com/v1</span><button class="mini-btn copy" title="复制">□</button></div></td><td><span class="type-tag url">url</span></td><td><span class="source-tag">凭据绑定</span></td><td><span class="status"><span class="status-dot"></span>已同步</span></td></tr>
+                <tr><td><div class="key-name">OPENAI_API_KEY</div></td><td><div class="value-cell"><span class="value masked" data-secret="sk-proj-7F4n••••••••••••••••••••••••">••••••••••••••••••</span><button class="mini-btn reveal" title="显示或隐藏">◉</button><button class="mini-btn copy" title="复制">□</button></div></td><td><span class="type-tag secret">secret</span></td><td><span class="source-tag">凭据绑定</span></td><td><span class="status"><span class="status-dot"></span>已同步</span></td></tr>
+                <tr><td><div class="key-name">NEXTAUTH_SECRET</div></td><td><div class="value-cell"><span class="value masked" data-secret="musegen-auth-secret••••••••">••••••••••••••••••</span><button class="mini-btn reveal" title="显示或隐藏">◉</button><button class="mini-btn copy" title="复制">□</button></div></td><td><span class="type-tag secret">secret</span></td><td><span class="source-tag">.env.local</span></td><td><span class="status warn"><span class="status-dot"></span>有差异</span></td></tr>
+                <tr><td><div class="key-name">LOG_LEVEL</div></td><td><div class="value-cell"><span class="value">debug</span><button class="mini-btn copy" title="复制">□</button></div></td><td><span class="type-tag number">text</span></td><td><span class="source-tag">.env.development</span></td><td><span class="status"><span class="status-dot"></span>已同步</span></td></tr>
+              </tbody></table>
+            </section>
+
+            <div class="side-stack"><section class="panel"><div class="panel-head"><div><div class="panel-title">模型凭据</div><div class="panel-kicker">只记录地址与 Key</div></div><button class="icon-btn" id="add-credential" title="新增凭据">+</button></div><div class="credential-list"><div class="credential"><div class="provider-mark">OAI</div><div><div class="credential-name">OpenAI · primary</div><div class="credential-meta">api.openai.com/v1 · ····3a91</div></div><div class="credential-state">有效<span class="state-line">3 个绑定</span></div></div><div class="credential"><div class="provider-mark">DS</div><div><div class="credential-name">DeepSeek · studio</div><div class="credential-meta">api.deepseek.com · ····8d20</div></div><div class="credential-state">有效<span class="state-line">2 个绑定</span></div></div><div class="credential"><div class="provider-mark">G</div><div><div class="credential-name">Gemini · sandbox</div><div class="credential-meta">generativelanguage.googleapis.com · ····b71c</div></div><div class="credential-state" style="color:var(--orange)">待验证<span class="state-line">1 个绑定</span></div></div></div></section>
+              <section class="panel"><div class="panel-head"><div><div class="panel-title">文件健康度</div><div class="panel-kicker">项目目录 · D:/Projects/Hupo</div></div><span class="health-badge ok">干净</span></div><div class="health"><div class="health-item"><div><div class="health-name">.env.local</div><div class="health-path">apps/web/.env.local</div></div><span class="health-badge ok">已忽略</span></div><div class="health-item"><div><div class="health-name">.env.example</div><div class="health-path">apps/web/.env.example</div></div><span class="health-badge neutral">仅模板</span></div><div class="health-item"><div><div class="health-name">Git 跟踪状态</div><div class="health-path">未发现敏感文件</div></div><span class="health-badge ok">通过</span></div></div></section>
+              <section class="panel"><div class="panel-head"><div><div class="panel-title">最近操作</div><div class="panel-kicker">仅保留元数据，不记录明文值</div></div><button class="outline-btn" data-section-jump="activity">查看全部</button></div><div class="activity"><div class="activity-item"><span class="activity-dot"></span><div class="activity-copy"><strong>同步了 3 个变量</strong><br />musegen-one / development</div><span class="activity-time">刚刚</span></div><div class="activity-item"><span class="activity-dot" style="background:var(--blue)"></span><div class="activity-copy"><strong>验证 OpenAI 凭据</strong><br />返回状态 · 200</div><span class="activity-time">12 分钟前</span></div><div class="activity-item"><span class="activity-dot" style="background:var(--orange)"></span><div class="activity-copy"><strong>发现 2 项文件差异</strong><br />等待确认后写回</div><span class="activity-time">昨天</span></div></div></section></div>
+          </div>
+        </section>
+
+        <section class="page-section" id="credentials"><div class="page-head"><div><div class="eyebrow">独立凭据库</div><h1>模型凭据</h1><p class="page-subtitle">保存调用地址与 Key，按项目和环境建立绑定。</p></div><button class="primary-btn" id="add-credential-page">+ 新增凭据</button></div><div class="empty-section"><h2>凭据库视图已准备</h2><p>原型阶段先从总览中的凭据面板进入详情，下一步接入完整的凭据列表与轮换流程。</p></div></section>
+        <section class="page-section" id="security"><div class="page-head"><div><div class="eyebrow">风险扫描</div><h1>安全检查</h1><p class="page-subtitle">检查 Git 忽略规则、文件跟踪状态和配置差异。</p></div><button class="outline-btn" id="run-security">开始扫描</button></div><div class="empty-section"><h2>当前项目没有待处理风险</h2><p>最近一次扫描在 2 分钟前完成，未发现已被 Git 跟踪的敏感配置文件。</p></div></section>
+        <section class="page-section" id="activity"><div class="page-head"><div><div class="eyebrow">审计记录</div><h1>操作记录</h1><p class="page-subtitle">记录显示、复制、同步与验证动作，不保存明文值。</p></div></div><div class="empty-section"><h2>最近 30 天 · 18 条记录</h2><p>同步与验证记录将按项目、环境和操作者筛选。</p></div></section>
+      </main>
+    </div>
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <div class="modal-layer" id="modal-layer" aria-hidden="true">
+      <div class="modal-backdrop" data-close-modal></div>
+      <section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+        <div class="modal-head"><div><div class="eyebrow" id="modal-kicker">工作流</div><h2 id="modal-title">弹窗标题</h2></div><button class="modal-close" id="modal-close" aria-label="关闭弹窗">×</button></div>
+        <div class="modal-body" id="modal-body"></div>
+      </section>
+    </div>
+    <script>
+      const sectionNames = { overview: '配置总览', credentials: '模型凭据', security: '安全检查', activity: '操作记录' };
+      const toast = document.querySelector('#toast');
+      const modalLayer = document.querySelector('#modal-layer');
+      const modalKicker = document.querySelector('#modal-kicker');
+      const modalTitle = document.querySelector('#modal-title');
+      const modalBody = document.querySelector('#modal-body');
+      let toastTimer;
+      let modalSubmit;
+      function showToast(message) { toast.textContent = message; toast.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => toast.classList.remove('show'), 2600); }
+      function showSection(id) { document.querySelectorAll('.page-section').forEach(section => section.classList.toggle('active', section.id === id)); document.querySelectorAll('.nav button').forEach(button => button.classList.toggle('active', button.dataset.section === id)); document.querySelector('#crumb-label').textContent = sectionNames[id]; }
+      function closeModal() { modalLayer.classList.remove('open'); modalLayer.setAttribute('aria-hidden', 'true'); modalBody.replaceChildren(); modalSubmit = null; }
+      function openModal({ kicker, title, body, submitText = '确认', onSubmit }) { modalKicker.textContent = kicker; modalTitle.textContent = title; modalBody.innerHTML = body; modalLayer.classList.add('open'); modalLayer.setAttribute('aria-hidden', 'false'); modalSubmit = onSubmit; const firstField = modalBody.querySelector('input, select'); if (firstField) setTimeout(() => firstField.focus(), 50); }
+      function formActions(cancelText = '取消', submitText = '确认') { return `<div class="modal-actions"><button type="button" class="outline-btn" data-close-modal>${cancelText}</button><button type="submit" class="primary-btn">${submitText}</button></div>`; }
+      function openProjectModal() { openModal({ kicker: '项目接入', title: '添加一个项目', submitText: '开始扫描', body: `<p class="modal-copy">选择项目根目录后，EnvVault 会查找所有 .env* 文件，并在写入前展示扫描结果。</p><form id="project-form"><div class="form-grid"><div class="field"><label for="project-name">项目名称</label><input id="project-name" value="新项目" /></div><div class="field"><label for="project-path">项目路径</label><div class="path-picker"><input id="project-path" placeholder="D:/Projects/your-project" required /><button type="button" class="outline-btn" id="choose-project-directory">选择目录</button></div><input id="project-folder-fallback" type="file" webkitdirectory directory multiple hidden /><small id="project-path-note">可以粘贴路径，也可以从系统目录选择器中选取。</small></div><label class="check-row"><input type="checkbox" checked />扫描完成后将项目加入左侧导航</label></div>${formActions('取消', '开始扫描')}</form>`, onSubmit: () => { showToast('已加入扫描队列：将查找所有 .env* 文件'); closeModal(); } }); const pathInput = document.querySelector('#project-path'); const nameInput = document.querySelector('#project-name'); const pathNote = document.querySelector('#project-path-note'); const fallback = document.querySelector('#project-folder-fallback'); document.querySelector('#choose-project-directory').addEventListener('click', async () => { if (window.showDirectoryPicker) { try { const handle = await window.showDirectoryPicker({ mode: 'read' }); pathInput.value = handle.name; pathInput.dataset.selected = 'true'; nameInput.value = handle.name; pathNote.textContent = `已选择目录 · ${handle.name}`; showToast('目录已选择，准备扫描 .env* 文件'); } catch (error) { if (error.name !== 'AbortError') showToast('目录选择未完成'); } } else { fallback.click(); } }); fallback.addEventListener('change', () => { const file = fallback.files && fallback.files[0]; if (!file) return; const segments = file.webkitRelativePath.split('/'); const folderName = segments[0] || file.name; pathInput.value = folderName; pathInput.dataset.selected = 'true'; nameInput.value = folderName; pathNote.textContent = `已选择目录 · ${folderName}`; showToast('目录已选择，准备扫描 .env* 文件'); }); }
+      function openCredentialModal() { openModal({ kicker: '模型凭据', title: '新增调用凭据', body: `<p class="modal-copy">只保存调用地址与 API Key。Key 默认掩码，保存后可绑定到多个项目环境。</p><form id="credential-form"><div class="form-grid two"><div class="field"><label for="provider-name">厂商</label><select id="provider-name"><option>OpenAI</option><option>Anthropic</option><option>Google Gemini</option><option>DeepSeek</option><option>OpenRouter</option><option>自定义厂商</option></select></div><div class="field"><label for="credential-name">凭据名称</label><input id="credential-name" value="primary" /></div></div><div class="form-grid" style="margin-top:14px"><div class="field"><label for="credential-endpoint">调用地址</label><input id="credential-endpoint" value="https://api.openai.com/v1" required /></div><div class="field"><label for="credential-key">API Key</label><input id="credential-key" type="password" placeholder="粘贴完整 Key" required /><small>列表只展示指纹和末四位，原值加密保存在本地 Vault。</small></div><label class="check-row"><input type="checkbox" checked />保存后绑定到 musegen-one / development</label></div>${formActions('取消', '保存凭据')}</form>`, onSubmit: () => { showToast('凭据已保存，可继续选择项目绑定'); closeModal(); } }); }
+      function openSyncModal() { openModal({ kicker: '同步确认', title: '写回本地文件', body: `<form id="sync-form"><p class="modal-copy">检测到 2 项差异。勾选需要同步的变量，确认后将以原子方式更新 <span class="key-name">.env.local</span>。</p><div class="diff-list"><label class="diff-row"><input type="checkbox" checked /><div><div class="diff-key">NEXTAUTH_SECRET</div><div class="diff-value">中心记录 ·•••••••• → 本地文件 ·••••••••</div></div><span class="diff-state">有差异</span></label><label class="diff-row"><input type="checkbox" checked /><div><div class="diff-key">OPENAI_API_KEY</div><div class="diff-value">凭据 primary → 项目变量 OPENAI_API_KEY</div></div><span class="diff-state" style="color:var(--green)">绑定更新</span></label></div><div class="modal-divider"></div><label class="check-row"><input type="checkbox" checked />同步完成后创建一份可恢复备份</label>${formActions('稍后处理', '确认同步')}</form>`, onSubmit: () => { showToast('已同步 2 项变量，文件哈希已更新'); closeModal(); } }); }
+      function openSearchModal() { openModal({ kicker: '快速定位', title: '搜索配置', body: `<form id="quick-search-form"><div class="field"><label for="quick-search-input">变量名或来源文件</label><input id="quick-search-input" placeholder="例如 OPENAI 或 .env.local" /></div><div class="shortcut-row" style="margin-top:14px"><kbd>Enter</kbd> 应用筛选 <kbd>Esc</kbd> 关闭弹窗</div>${formActions('取消', '应用搜索')}</form>`, onSubmit: () => { const query = document.querySelector('#quick-search-input').value; closeModal(); showSection('overview'); const input = document.querySelector('#config-search'); input.value = query; input.dispatchEvent(new Event('input')); showToast(query ? `已筛选：${query}` : '已清除搜索'); } }); }
+      function openNoticeModal() { openModal({ kicker: '通知中心', title: '最近提醒', submitText: '完成', body: `<div class="notice-list"><div class="notice"><span class="notice-dot"></span><div><strong>发现 2 项文件差异</strong><p>musegen-one / development 等待同步确认。</p></div><time>刚刚</time></div><div class="notice"><span class="notice-dot" style="background:var(--blue)"></span><div><strong>Gemini 凭据待验证</strong><p>验证后才能同步到绑定项目。</p></div><time>12 分钟前</time></div><div class="notice"><span class="notice-dot" style="background:var(--green)"></span><div><strong>扫描已完成</strong><p>已检查 4 个配置文件，Git 风险项为 0。</p></div><time>昨天</time></div></div><div class="modal-actions"><button type="button" class="primary-btn" data-close-modal>知道了</button></div>` }); }
+      document.querySelectorAll('.nav button').forEach(button => button.addEventListener('click', () => showSection(button.dataset.section)));
+      document.querySelectorAll('[data-section-jump]').forEach(button => button.addEventListener('click', () => showSection(button.dataset.sectionJump)));
+      document.querySelectorAll('.env-tab').forEach(button => button.addEventListener('click', () => { document.querySelectorAll('.env-tab').forEach(tab => tab.classList.remove('active')); button.classList.add('active'); document.querySelector('#env-note').textContent = button.dataset.env === 'production' ? '生产环境 · 受保护' : '已与本地文件保持一致'; showToast(`已切换到 ${button.dataset.env} 环境`); }));
+      document.querySelectorAll('.reveal').forEach(button => button.addEventListener('click', () => { const value = button.parentElement.querySelector('.value'); const revealed = value.classList.toggle('masked'); value.textContent = revealed ? '••••••••••••••••••' : value.dataset.secret; showToast(revealed ? '敏感值已隐藏' : '敏感值已临时显示'); }));
+      document.querySelectorAll('.copy').forEach(button => button.addEventListener('click', async () => { const value = button.parentElement.querySelector('.value'); try { await navigator.clipboard.writeText(value.dataset.secret || value.textContent); showToast('已复制，剪贴板将在 30 秒后清理'); } catch { showToast('已准备复制，请在安全环境中操作'); } }));
+      document.querySelector('#config-search').addEventListener('input', event => { const query = event.target.value.toLowerCase(); document.querySelectorAll('#config-rows tr').forEach(row => { row.hidden = !row.textContent.toLowerCase().includes(query); }); });
+      document.querySelector('#scan-files').addEventListener('click', () => showToast('扫描完成：发现 48 个变量，未发现新增文件'));
+      document.querySelector('#sync-config').addEventListener('click', openSyncModal);
+      document.querySelector('#run-security').addEventListener('click', () => showToast('扫描完成：Git 风险项 0'));
+      document.querySelector('#add-project').addEventListener('click', openProjectModal);
+      document.querySelectorAll('#add-credential, #add-credential-page').forEach(button => button.addEventListener('click', openCredentialModal));
+      document.querySelector('.top-actions .icon-btn[title="搜索"]').addEventListener('click', openSearchModal);
+      document.querySelector('.top-actions .icon-btn[title="通知"]').addEventListener('click', openNoticeModal);
+      modalLayer.addEventListener('click', event => { if (event.target.closest('[data-close-modal]')) closeModal(); });
+      document.querySelector('#modal-close').addEventListener('click', closeModal);
+      modalLayer.addEventListener('submit', event => { event.preventDefault(); if (modalSubmit) modalSubmit(event); });
+      document.addEventListener('keydown', event => { if (event.key === 'Escape' && modalLayer.classList.contains('open')) closeModal(); });
+    </script>
+  </body>
+</html>
