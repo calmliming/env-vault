@@ -22,7 +22,7 @@
 import { app } from 'electron'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { createCipheriv, createDecipheriv, randomBytes, timingSafeEqual } from 'node:crypto'
+import { createCipheriv, createDecipheriv, hkdfSync, randomBytes, timingSafeEqual } from 'node:crypto'
 import * as keystore from './keystore'
 import type { VaultStatus } from '@shared/ipc'
 
@@ -164,6 +164,23 @@ function requireKey(): Buffer {
     throw new VaultError('VAULT_LOCKED', 'Vault 已锁定，请先解锁')
   }
   return masterKey
+}
+
+/**
+ * 从主密钥派生一把**用途隔离**的子密钥（HKDF-SHA256）。
+ *
+ * 用途隔离的意思是：不同 label 派生出的子密钥互相独立，
+ * 拿到其中一把推不出主密钥、也推不出另一把。所以需要一把"稳定的秘密"
+ * （比如指纹用的 HMAC 密钥）时，派生一把出来，而不是把 masterKey 交出去。
+ *
+ * 🔴 这个函数**不返回主密钥本身**，也不该被改成那样。
+ * 主密钥只在这个模块里存在，是 §7「解密值只在必要的内存生命周期内存在」的前提。
+ */
+export function deriveSubkey(label: string, bytes = 32): Buffer {
+  const key = requireKey()
+  // salt 留空、用途写进 info：主密钥本身已经是 32 字节均匀随机，
+  // HKDF 在这种输入下不需要额外的 salt 来提取熵。
+  return Buffer.from(hkdfSync('sha256', key, Buffer.alloc(0), `envvault:${label}`, bytes))
 }
 
 // ---------------------------------------------------------------------------

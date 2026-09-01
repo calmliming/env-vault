@@ -3,9 +3,12 @@ import type { ReactNode } from 'react'
 import { Sidebar } from './components/Sidebar'
 import { Topbar } from './components/Topbar'
 import { useAppHealth } from './hooks/useAppHealth'
+import { useCredentials } from './hooks/useCredentials'
 import { useWorkspace } from './hooks/useWorkspace'
 import { bridge } from './lib/api'
+import { BindCredentialModal } from './modals/BindCredentialModal'
 import { CredentialModal } from './modals/CredentialModal'
+import { CredentialSyncModal } from './modals/CredentialSyncModal'
 import { DeleteEntryModal } from './modals/DeleteEntryModal'
 import { DiffModal } from './modals/DiffModal'
 import { NoticeModal } from './modals/NoticeModal'
@@ -14,11 +17,17 @@ import { SearchModal } from './modals/SearchModal'
 import { SyncModal } from './modals/SyncModal'
 import { ModalProvider, useModal } from './state/modal'
 import { ToastProvider, useToast } from './state/toast'
+import { CredentialsView } from './views/CredentialsView'
 import { OverviewView } from './views/OverviewView'
 import { SettingsView } from './views/SettingsView'
-import { ActivityView, CredentialsView, SecurityView } from './views/SimpleViews'
+import { ActivityView, SecurityView } from './views/SimpleViews'
 import type { ViewId } from './views/registry'
-import type { ConfigEntryView, EnvFileView } from '@shared/ipc'
+import type {
+  ConfigEntryView,
+  CredentialSuggestion,
+  CredentialSummary,
+  EnvFileView
+} from '@shared/ipc'
 
 export function App(): ReactNode {
   return (
@@ -35,6 +44,7 @@ function Workspace(): ReactNode {
   const { openModal } = useModal()
   const { health, error, loading, refresh } = useAppHealth()
   const workspace = useWorkspace(health?.vault ?? null)
+  const credentials = useCredentials(health?.vault ?? null)
 
   const [activeView, setActiveView] = useState<ViewId>('overview')
   const [query, setQuery] = useState('')
@@ -90,13 +100,105 @@ function Workspace(): ReactNode {
     })
   }, [openModal, showToast, workspace])
 
-  const openCredential = useCallback(() => {
-    openModal({
-      kicker: '模型凭据',
-      title: '新增调用凭据',
-      render: ({ close }) => <CredentialModal close={close} showToast={showToast} />
-    })
-  }, [openModal, showToast])
+  /**
+   * 凭据相关的四个入口。
+   *
+   * 每一个在成功之后都要重拉**两处**：凭据列表（绑定数、指纹变了）和
+   * 当前工作区（配置表里的「由凭据管理」标记跟着绑定走）。
+   * 漏掉后者的后果是静默的 —— 表格里那一行还显示可编辑，点下去才被主进程拒绝。
+   */
+  const refreshAfterCredentialChange = useCallback(async () => {
+    await credentials.reload()
+    await workspace.reloadCurrent()
+  }, [credentials, workspace])
+
+  const openCredential = useCallback(
+    (suggestion?: { projectId: number; suggestion: CredentialSuggestion }) => {
+      openModal({
+        kicker: '模型凭据',
+        title: suggestion ? '从变量提取凭据' : '新增调用凭据',
+        render: ({ close }) => (
+          <CredentialModal
+            close={close}
+            showToast={showToast}
+            providers={credentials.providers}
+            {...(suggestion ? { suggestion } : {})}
+            onSaved={() => void refreshAfterCredentialChange()}
+          />
+        )
+      })
+    },
+    [openModal, showToast, credentials.providers, refreshAfterCredentialChange]
+  )
+
+  const openRotate = useCallback(
+    (credential: CredentialSummary) => {
+      openModal({
+        kicker: '凭据轮换',
+        title: `轮换 ${credential.credentialName} 的 Key`,
+        render: ({ close }) => (
+          <CredentialModal
+            close={close}
+            showToast={showToast}
+            providers={credentials.providers}
+            rotating={credential}
+            onSaved={() => void refreshAfterCredentialChange()}
+          />
+        )
+      })
+    },
+    [openModal, showToast, credentials.providers, refreshAfterCredentialChange]
+  )
+
+  const openBind = useCallback(
+    (credential: CredentialSummary) => {
+      openModal({
+        kicker: '凭据绑定',
+        title: `绑定 ${credential.credentialName}`,
+        render: ({ close }) => (
+          <BindCredentialModal
+            close={close}
+            showToast={showToast}
+            credential={credential}
+            projects={workspace.projects}
+            onBound={() => void refreshAfterCredentialChange()}
+          />
+        )
+      })
+    },
+    [openModal, showToast, workspace.projects, refreshAfterCredentialChange]
+  )
+
+  const openCredentialSync = useCallback(
+    (credential: CredentialSummary) => {
+      openModal({
+        kicker: '一改多同步',
+        title: `同步 ${credential.credentialName}`,
+        render: ({ close }) => (
+          <CredentialSyncModal
+            close={close}
+            showToast={showToast}
+            credential={credential}
+            onSynced={() => void refreshAfterCredentialChange()}
+          />
+        )
+      })
+    },
+    [openModal, showToast, refreshAfterCredentialChange]
+  )
+
+  const deleteCredential = useCallback(
+    async (credential: CredentialSummary) => {
+      const result = await bridge.deleteCredential(credential.id)
+      if (!result.ok) {
+        showToast(result.message)
+        return
+      }
+      await refreshAfterCredentialChange()
+      showToast(`已删除凭据 ${credential.credentialName}；磁盘上的 .env 文件未改动`)
+    },
+    [showToast, refreshAfterCredentialChange]
+  )
 
   const openDiff = useCallback(
     (file: EnvFileView) => {
@@ -226,11 +328,26 @@ function Workspace(): ReactNode {
               onOpenSync={openSync}
               onOpenDiff={openDiff}
               onDeleteEntry={openDeleteEntry}
+              onExtractCredential={(suggestion) =>
+                workspace.selectedProject &&
+                openCredential({ projectId: workspace.selectedProject.id, suggestion })
+              }
               onVaultAction={() => void runVaultAction()}
               showToast={showToast}
             />
           )}
-          {activeView === 'credentials' && <CredentialsView onOpenCredential={openCredential} />}
+          {activeView === 'credentials' && (
+            <CredentialsView
+              store={credentials}
+              onAddCredential={() => openCredential()}
+              onRotate={openRotate}
+              onBind={openBind}
+              onSync={openCredentialSync}
+              onDelete={(credential) => void deleteCredential(credential)}
+              onVaultAction={() => void runVaultAction()}
+              showToast={showToast}
+            />
+          )}
           {activeView === 'security' && (
             <SecurityView project={workspace.selectedProject} files={workspace.files} />
           )}

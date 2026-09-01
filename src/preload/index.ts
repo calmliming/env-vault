@@ -19,7 +19,16 @@ import {
   type AdoptResult,
   type AppHealth,
   type ConfigEntryView,
+  type CreateCredentialRequest,
+  type CredentialBindingView,
+  type CredentialRevealResult,
+  type CredentialSuggestion,
+  type CredentialSummary,
+  type CredentialSyncPreview,
+  type CredentialSyncResult,
   type FileChangedEvent,
+  type ProviderInfo,
+  type UpdateCredentialRequest,
   type FileDiff,
   type RestoreResult,
   type DatabaseInfo,
@@ -74,6 +83,53 @@ const api: EnvVaultApi = {
     >,
   listFiles: (projectId: number) =>
     ipcRenderer.invoke(CHANNELS.filesList, { projectId }) as Promise<IpcResult<EnvFileView[]>>,
+
+  // --- 模型凭据（阶段 3）---
+  listCredentials: () =>
+    ipcRenderer.invoke(CHANNELS.credentialsList) as Promise<IpcResult<CredentialSummary[]>>,
+  listProviders: () =>
+    ipcRenderer.invoke(CHANNELS.credentialsProviders) as Promise<IpcResult<ProviderInfo[]>>,
+  suggestCredentials: (projectId: number) =>
+    ipcRenderer.invoke(CHANNELS.credentialsSuggest, { projectId }) as Promise<
+      IpcResult<CredentialSuggestion[]>
+    >,
+  createCredential: (request: CreateCredentialRequest) =>
+    ipcRenderer.invoke(CHANNELS.credentialsCreate, request) as Promise<IpcResult<CredentialSummary>>,
+  updateCredential: (request: UpdateCredentialRequest) =>
+    ipcRenderer.invoke(CHANNELS.credentialsUpdate, request) as Promise<IpcResult<CredentialSummary>>,
+  revealCredential: (credentialId: number) =>
+    ipcRenderer.invoke(CHANNELS.credentialsReveal, { credentialId }) as Promise<
+      IpcResult<CredentialRevealResult>
+    >,
+  deleteCredential: (credentialId: number) =>
+    ipcRenderer.invoke(CHANNELS.credentialsDelete, { credentialId }) as Promise<
+      IpcResult<{ removed: boolean }>
+    >,
+  bindCredential: (request: {
+    credentialId: number
+    projectId: number
+    environment: string
+    keyVariable: string
+    endpointVariable?: string | null
+  }) =>
+    ipcRenderer.invoke(CHANNELS.credentialsBind, request) as Promise<
+      IpcResult<CredentialBindingView[]>
+    >,
+  unbindCredential: (bindingId: number) =>
+    ipcRenderer.invoke(CHANNELS.credentialsUnbind, { bindingId }) as Promise<
+      IpcResult<CredentialBindingView[]>
+    >,
+  previewCredentialSync: (credentialId: number) =>
+    ipcRenderer.invoke(CHANNELS.credentialsSyncPreview, { credentialId }) as Promise<
+      IpcResult<CredentialSyncPreview>
+    >,
+  syncCredential: (
+    credentialId: number,
+    targets: { bindingId: number; expectedHash: string }[]
+  ) =>
+    ipcRenderer.invoke(CHANNELS.credentialsSync, { credentialId, targets }) as Promise<
+      IpcResult<CredentialSyncResult>
+    >,
   listActivity: (limit?: number) =>
     ipcRenderer.invoke(CHANNELS.activityList, { limit }) as Promise<IpcResult<ActivityRecord[]>>,
   diffFile: (fileId: number) =>

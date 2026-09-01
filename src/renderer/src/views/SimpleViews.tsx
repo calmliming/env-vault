@@ -1,42 +1,17 @@
 /**
- * 凭据 / 安全 / 记录三个视图。
+ * 安全检查与操作记录两个视图。
  *
  * 「操作记录」在阶段 1 已经有真实数据了 —— `activity_log` 从导入的第一刻起就在写。
- * 另外两个仍是空态壳，但正文如实说明了它们在等哪个阶段，而不是假装已经能用。
+ * 「安全检查」仍是部分空态，但正文如实说明了哪几条在等哪个阶段，
+ * 而不是放假的"通过"徽章。
+ *
+ * 模型凭据页在阶段 3 变成了真实功能，已经挪到 `CredentialsView.tsx`。
  */
 
 import { useCallback, useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import { bridge } from '../lib/api'
 import type { ActivityRecord, EnvFileView, ProjectSummary } from '@shared/ipc'
-
-export function CredentialsView({
-  onOpenCredential
-}: {
-  onOpenCredential(): void
-}): ReactNode {
-  return (
-    <section>
-      <div className="page-head">
-        <div>
-          <div className="eyebrow">独立凭据库</div>
-          <h1>模型凭据</h1>
-          <p className="page-subtitle">保存调用地址与 Key，按项目和环境建立绑定。</p>
-        </div>
-        <button className="primary-btn" onClick={onOpenCredential}>
-          + 新增凭据
-        </button>
-      </div>
-      <div className="empty-section">
-        <h2>凭据库将在阶段 3 接入</h2>
-        <p>
-          届时会从已纳管的 `.env*` 变量里识别厂商，把调用地址与 API Key 提到独立实体，
-          再按项目和环境建立绑定。现在点上面的按钮可以看到表单结构，但不会保存。
-        </p>
-      </div>
-    </section>
-  )
-}
 
 export function SecurityView({
   project,

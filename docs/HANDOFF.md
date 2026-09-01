@@ -16,34 +16,39 @@ Electron + React + TypeScript，数据全部留在本机，敏感值加密存储
 | 0 基础设施与产品骨架 | ✅ | [PHASE-0.md](PHASE-0.md) |
 | 1 项目与 `.env*` 全量扫描 | ✅ | [PHASE-1.md](PHASE-1.md) |
 | 2 通用配置工作台 | ✅ | [PHASE-2.md](PHASE-2.md) |
-| 3 模型凭据库 | ⬜ 未开始 | — |
+| 3 模型凭据库 | ✅ 除厂商验证请求 | [PHASE-3.md](PHASE-3.md) |
 | 4 安全中心与轮换 | ⬜ 未开始 | — |
 | 5 CLI 与高级集成 | ⬜ 未开始 | — |
 
 **能用的功能**：选目录 → 扫描预览 → 勾选文件导入 → 加密入库 → 分环境查看/搜索 →
 点开显示敏感值（留痕）→ 文件被外部改动时自动提醒 → 逐变量看差异 →
 选择「以磁盘为准」或「以中心记录为准」（原子写回 + 自动备份）→
-就地编辑或删除单个变量（同样是原子写回 + 备份 + 并发校验）。
+就地编辑或删除单个变量 → 从变量识别并提取模型凭据 → 一个凭据绑定多个项目环境 →
+改一次 Key 预览并同步到全部绑定（同样是原子写回 + 备份 + 并发校验）。
 
-**界面上诚实标注为"尚未接入"的**：模型凭据（阶段 3）、Git 风险扫描（阶段 4）、
-剪贴板定时清理（阶段 4）。这些地方的表单/空态是有的，点了只会弹一条如实说明的 toast，
-**没有任何地方假装完成了实际没做的事** —— 请保持这条。
+**界面上诚实标注为"尚未接入"的**：厂商验证请求（凭据状态显示「未验证」，
+见 PHASE-3 §6）、Git 风险扫描（阶段 4）、剪贴板定时清理（阶段 4）。
+这些地方的表单/空态是有的，**没有任何地方假装完成了实际没做的事** —— 请保持这条。
 
 ## 2. 先跑一遍
 
 ```powershell
 pnpm dev       # 开发模式，Vite HMR + Electron
-pnpm verify    # 全套：86 单元测试 + 94 核心断言 + 58 界面断言，约 1 分钟
+pnpm verify    # 全套：106 单元测试 + 135 核心断言 + 85 界面断言，约 1 分钟
 ```
 
 `pnpm verify` 全绿是当前基线。**动任何代码前先跑一次**，确认起点是干净的。
+
+> ⚠️ `verify:ui` 跑的是 `out/verify/index.mjs` 这个**已构建**的产物，
+> 而它由 `verify:core` 那一步的 esbuild 生成。只改了 `verify-core.ts` 就直接跑
+> `verify:ui`，用的还是旧包 —— 会看到一堆莫名其妙对不上的失败。
 
 其它命令：
 
 ```powershell
 pnpm test         # 只跑单元测试（node --test 原生跑 .ts，无需构建）
 pnpm build        # typecheck + 三端打包到 out/
-pnpm verify:core  # 真实 Electron 运行时里验数据库、Vault、扫描、导入、差异、写回
+pnpm verify:core  # 真实 Electron 运行时里验数据库、Vault、扫描、导入、差异、写回、凭据
 pnpm verify:ui    # 播种真数据 → 启动真界面 → CDP 断言 → 截图到 out/
 ```
 
@@ -83,7 +88,10 @@ src/main/
     driver.ts        SQLite 适配层（换回 better-sqlite3 只改这一个文件）
     migrations.ts    迁移定义，append-only，当前 v4
     migrator.ts      PRAGMA user_version 做版本游标
-    repositories.ts  全部数据访问 + 明文加解密边界
+    repositories.ts  项目 / 文件 / 配置项的数据访问 + 明文加解密边界
+    credentials.ts   模型凭据与绑定；写盘复用 repositories 的 writeGuarded
+  providers/         ⚠️ 同样要能被 node --test 跑，约定见 §5
+    index.ts         厂商适配器。🔴 纯函数，不发网络请求
   env/               ⚠️ 这个目录有特殊约定，见 §5
     document.ts      保格式的 .env 解析/写回/删行 + 格式骨架
     classify.ts      值类型与敏感等级
@@ -99,8 +107,9 @@ index.html           阶段 0 之前的 HTML 原型，留作视觉对照，不�
 
 ## 5. 不明显的约定（改代码前必读）
 
-**`src/main/env/` 里的 import 必须带 `.ts` 后缀，且不能用 `@shared/*` 别名。**
-这些模块要能被 `node --test` 直接跑，而 Node 的 ESM 解析不会替你补扩展名。
+**`src/main/env/` 和 `src/main/providers/` 里的 import 必须带 `.ts` 后缀，
+且不能用 `@shared/*` 别名。** 这些模块要能被 `node --test` 直接跑，
+而 Node 的 ESM 解析不会替你补扩展名。
 其它目录保持无后缀。`tsconfig.node.json` 里为此开了 `allowImportingTsExtensions`。
 
 **`src/main/env/` 里不能用构造函数参数属性**（`constructor(readonly x: T)`）。
@@ -119,15 +128,20 @@ Node 的类型剥离是 strip-only 的，会报 `ERR_UNSUPPORTED_TYPESCRIPT_SYNT
 "顺手删掉"，删了滚动条就冒回窗口、顶栏跟着内容滚走。`global.css` 里注释成了一条，
 `verify:ui` 有四条断言守着。
 
-**七处操作会改变监听集合**（导入 / 移除 / 重扫 / 以磁盘为准 / 以记录为准 /
-编辑变量 / 删除变量），每一处都要调 `refreshWatchTargets()`。
+**八处操作会改变监听集合**（导入 / 移除 / 重扫 / 以磁盘为准 / 以记录为准 /
+编辑变量 / 删除变量 / 凭据同步），每一处都要调 `refreshWatchTargets()`。
 漏掉的后果是静默的：监听器还活着，但拿旧哈希去比新文件。
 
-**写盘的三条路径共用同一道并发关**（`filesRestore` / `entriesUpdate` /
-`entriesDelete`）：`expectedHash` 必须由**调用方**传入，语义是「我这个决定
-是基于哪个版本做的」。IPC 层的 `asFileHash` 只接受 64 位十六进制串，
-不接受「没传就跳过校验」。理由见 PHASE-2 §5 —— 现算的哈希拿去和现算的哈希比，
-守卫永远不可能触发。
+**写盘的四条路径共用同一道并发关**（`filesRestore` / `entriesUpdate` /
+`entriesDelete` / `credentialsSync`）：`expectedHash` 必须由**调用方**传入，
+语义是「我这个决定是基于哪个版本做的」。IPC 层的 `asFileHash` 只接受
+64 位十六进制串，不接受「没传就跳过校验」。理由见 PHASE-2 §5 ——
+现算的哈希拿去和现算的哈希比，守卫永远不可能触发。
+凭据同步是**每个目标各带一个哈希**：它们是不同的文件，共用一个没有意义。
+
+**凭据绑定按 (项目, 环境, 变量名) 配对，不按 `config_entries.id`。**
+重扫和「以磁盘为准」会重建条目 id，按 id 绑的话用户点一次「以磁盘为准」
+所有绑定就全失效了，而且不报任何错。
 
 **生产 CSP 不含 `unsafe-inline`。** 渲染层不要写内联 `style` 字符串，
 动态颜色用修饰类或 CSS 变量。
@@ -140,10 +154,15 @@ Node 的类型剥离是 strip-only 的，会报 `ERR_UNSUPPORTED_TYPESCRIPT_SYNT
         → IPC → 渲染层拿到 ••••••••
 ```
 
-明文过桥**只发生在 `entries:reveal` 一个通道**，且每次调用都写一条操作记录
-（只记 key 名，不记值）。差异面板同样只给掩码 —— 它是一览视图，
+明文过桥**只发生在 `entries:reveal` 和 `credentials:reveal` 两个通道**，
+且每次调用都写一条操作记录（只记 key 名 / 凭据名，不记值）。
+差异面板、凭据列表、同步预览同样只给掩码 —— 它们都是一览视图，
 把明文铺上去等于绕过了 reveal 的审计。编辑框也守同一条：敏感项默认盲写，
 点开编辑不等于看见值；已经点过「显示」的才预填（那次 reveal 已经留痕）。
+
+**凭据的指纹是 `HMAC(从主密钥派生的子密钥, key)`，不是裸哈希。**
+裸哈希会让拿到库文件的人能拿候选 Key 字典去比对；派生之后没有系统密钥库
+就什么都验证不了。`vault.deriveSubkey` 做用途隔离，**不返回主密钥本身**。
 
 **🔴 `config_entries` 里只有 `encrypted_value` 是加密的，别的列一个都不能放值。**
 这条是踩出来的：`original_format` 从阶段 1 起存的是**完整原始行**，
@@ -155,29 +174,24 @@ Node 的类型剥离是 strip-only 的，会报 `ERR_UNSUPPORTED_TYPESCRIPT_SYNT
 `verify:ui` 有几条断言搜整个页面文本确认没有那些假 Key。加功能时别把它们弄红 ——
 也别在给 `config_entries` 加列时忘了这一条。
 
-## 7. 下一步：阶段 3 模型凭据库
+## 7. 下一步：厂商验证请求，然后是阶段 4
 
-阶段 2 的交付项已经全部做完（搜索、筛选、编辑、删除、复制、掩码显示）。
-下一刀是计划 §9 阶段 3：把散在各个 `.env` 里的大模型凭据提成独立实体。
+阶段 3 只差一项：**五家厂商的真实验证请求**（PHASE-3 §6）。
+接口、默认地址、变量名识别、`redact` 都写好了，只有 `validate()` 不发包，
+界面上凭据状态如实显示「未验证」。
 
-表已经在迁移 001 里建好了，一直空着：`model_credentials`（厂商、名称、
-endpoint、`encrypted_api_key`、指纹、后四位）和 `credential_bindings`
-（凭据 ↔ 项目/环境/变量名）。界面上「模型凭据」页和 `CredentialModal`
-的表单也在，目前点了只会弹一条如实说明尚未接入的 toast。
+规矩已经在这一刀里定死了，照着做即可：
 
-开工前值得先定的几件事：
+- **仅在用户显式点「验证」时发**，不自动验证、不定时重试、不在启动时探活；
+- **只打元数据接口**（`/models` 这类），不打推理接口（§7：避免无意产生推理费用）；
+- 适配器保持纯函数 —— `describeValidation()` 返回描述，发包的是另一层。
+  那一层要能注入假传输，否则验收脚本一跑就会把测试 Key 发到真实厂商去；
+- 请求头里带着完整 Key，**整个 `ValidationRequest` 对象禁止进日志**。
 
-- **识别厂商靠什么**：值的形状（`sk-ant-`、`AKIA`…）已经在 `classify.ts`
-  里有一套，还是另外按变量名（`OPENAI_API_KEY`）猜？两者冲突时听谁的？
-- **`credential_bindings.key_variable` 和 `config_entries` 是什么关系**：
-  一个变量被提成凭据之后，配置表里还显示它吗？改凭据要不要连带写回那些文件？
-  （`UNIQUE (project_id, environment, key_variable)` 已经限定了一个环境里
-  同名变量只能绑一次。）
-- **`fingerprint` 怎么算**：它要能回答「这两个项目用的是不是同一把 Key」，
-  又不能让人从指纹反推出 Key。
-
-`config_entries.id` 在重扫、编辑、删除时都是**稳定的**（只 UPDATE 不重建），
-绑定可以安全地指向它 —— 这条不变量是有意维护的，别在阶段 3 破坏它。
+这是应用第一次产生出站流量，值得单独一刀审。之后是计划 §9 阶段 4
+（Git 跟踪检查、`.gitignore` 覆盖、风险分级、凭据轮换与影响范围预览、
+剪贴板定时清理）—— 轮换的机器其实已经就位了，阶段 4 主要是补
+「旧版本标记 revoked + 不含明文的审计记录」和安全检查那一页。
 
 ## 8. 三条来自踩坑的经验
 
@@ -195,7 +209,16 @@ endpoint、`encrypted_api_key`、指纹、后四位）和 `credential_bindings`
 
 **验收脚本抓到的失败，先判断是"我的期望写错了"还是"实现写错了"，别急着改期望。**
 阶段 1 有两条失败，一条是我算错了数（改期望），另一条是重扫会推翻用户的取消勾选
-（真 bug，加了迁移 003）。详见 PHASE-1 §4。
+（真 bug，加了迁移 003）。阶段 3 也有一条：厂商适配器的 Gemini 用例没通过，
+查下来是我的样例 Key 少写了一位（真实格式是 `AIza` + 35 位），实现是对的。
+详见 PHASE-1 §4。
+
+**样例数据是共享的，一条断言改动它就可能弄红另一条。**
+`verify-core` 留下的沙箱就是 `verify-ui` 的输入。阶段 3 一开始想复用
+`OPENAI_API_KEY` 做同步目标，但同步会覆盖它的值，而界面验收还要靠那把 Key
+验「没点显示就不给明文」—— 于是给阶段 3 单独加了一个 `ANTHROPIC_API_KEY`。
+制造并发场景用的临时变量（`OUTSIDER`）也要在段落末尾删掉，
+否则界面那条「变量集合」断言会多出一条。
 
 ## 9. 提交与推送
 

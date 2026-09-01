@@ -34,6 +34,7 @@ import {
   type ScannedFile
 } from '../env/scan.ts'
 import { WriteConflictError, writeEnvFileAtomic } from '../env/write.ts'
+import { getProvider } from '../providers/index.ts'
 import {
   MASKED_PLACEHOLDER,
   type ActivityRecord,
@@ -399,6 +400,42 @@ export function listEntries(query: EntriesQuery): ConfigEntryView[] {
       project_path: string
     }>(...(query.environment ? [query.projectId, query.environment] : [query.projectId]))
 
+  /**
+   * 已被凭据接管的变量：`环境 变量名` → 绑定信息。
+   *
+   * 绑定记的是 (项目, 环境, 变量名) 而不是 entry id ——
+   * 重扫会重建条目 id，绑定不能跟着失效。所以这里按三元组配对。
+   */
+  const managed = new Map<string, ConfigEntryView['managedBy']>()
+  for (const row of db
+    .prepare(
+      `SELECT b.id, b.credential_id, b.environment, b.key_variable, b.endpoint_variable,
+              c.credential_name, c.provider_name
+       FROM credential_bindings b
+       JOIN model_credentials c ON c.id = b.credential_id
+       WHERE b.project_id = ?`
+    )
+    .all<{
+      id: number
+      credential_id: number
+      environment: string
+      key_variable: string
+      endpoint_variable: string | null
+      credential_name: string
+      provider_name: string
+    }>(query.projectId)) {
+    const shared = {
+      bindingId: row.id,
+      credentialId: row.credential_id,
+      credentialName: row.credential_name,
+      providerName: providerDisplayName(row.provider_name)
+    }
+    managed.set(`${row.environment} ${row.key_variable}`, { ...shared, role: 'key' })
+    if (row.endpoint_variable) {
+      managed.set(`${row.environment} ${row.endpoint_variable}`, { ...shared, role: 'endpoint' })
+    }
+  }
+
   // 每个文件只算一次哈希，不要每行都去摸一次盘。
   const driftCache = new Map<string, boolean>()
   const isDrifted = (absolutePath: string, storedHash: string | null): boolean => {
@@ -425,9 +462,18 @@ export function listEntries(query: EntriesQuery): ConfigEntryView[] {
       sourceFile: toRelative(row.project_path, row.absolute_path),
       lineNumber: row.source_line,
       fileId: row.file_id,
-      fileDrifted: isDrifted(row.absolute_path, row.file_hash)
+      fileDrifted: isDrifted(row.absolute_path, row.file_hash),
+      managedBy: managed.get(`${row.environment} ${row.key}`) ?? null
     }
   })
+}
+
+/**
+ * `model_credentials.provider_name` 存的是适配器 id，展示名从适配器取。
+ * 存 id 而不是中文名，是为了改展示文案时不用迁移数据。
+ */
+function providerDisplayName(providerId: string): string {
+  return getProvider(providerId)?.providerName ?? providerId
 }
 
 /**
@@ -528,7 +574,8 @@ function centralEntriesOf(fileId: number): (CentralEntry & { sensitivity: Sensit
     }))
 }
 
-function requireFile(fileId: number): {
+/** 导出给 credentials.ts：绑定要按 (project, environment) 定位同一批文件记录。 */
+export function requireFile(fileId: number): {
   id: number
   absolute_path: string
   file_hash: string | null
@@ -719,8 +766,13 @@ function backupRoot(): string {
   return join(app.getPath('userData'), 'backups')
 }
 
-/** 原子写入 + 把并发冲突翻译成一句用户看得懂的话。 */
-function writeGuarded(
+/**
+ * 原子写入 + 把并发冲突翻译成一句用户看得懂的话。
+ *
+ * 导出是给 `credentials.ts` 用的：凭据的「一改多同步」写的是同一批 `.env` 文件，
+ * 必须走同一条写入路径，否则备份、并发校验这些保证会在第二条路径上悄悄缺席。
+ */
+export function writeGuarded(
   absolutePath: string,
   content: string,
   expectedHash: string,
@@ -799,6 +851,35 @@ function requireEditableEntry(entryId: number, expectedHash: string): EditContex
 }
 
 /**
+ * 这个变量是不是某条绑定的 **Key 变量**（阶段 3）。
+ *
+ * 按 (项目, 环境, 变量名) 配对而不是按 entry id：重扫会重建条目 id，
+ * 绑定不能跟着失效。
+ *
+ * 只认 Key 变量，不认地址变量 —— 同步写的只有 Key，所以只有 Key 是
+ * 「凭据说了算」的。把地址也锁上就是禁止一个我们其实并不管理的东西。
+ */
+function keyBindingOf(entry: { key: string }, file: { project_id: number; environment: string }): {
+  id: number
+  credential_name: string
+} | null {
+  return (
+    getDatabase()
+      .prepare(
+        `SELECT b.id, c.credential_name
+         FROM credential_bindings b
+         JOIN model_credentials c ON c.id = b.credential_id
+         WHERE b.project_id = ? AND b.environment = ? AND b.key_variable = ?`
+      )
+      .get<{ id: number; credential_name: string }>(
+        file.project_id,
+        file.environment,
+        entry.key
+      ) ?? null
+  )
+}
+
+/**
  * 写盘之后，把中心记录里跟着文件内容走的那几列重新对齐：
  * 文件哈希、每一条的行号、以及格式骨架。
  *
@@ -809,7 +890,8 @@ function requireEditableEntry(entryId: number, expectedHash: string): EditContex
  * ⚠️ 只 UPDATE，不重建记录 —— `config_entries.id` 必须保持稳定，
  * 阶段 3 的凭据绑定要指向这些 id（同 `rescanProject` 的理由）。
  */
-function syncFileState(fileId: number, newHash: string, content: string, now: number): void {
+/** 导出给 credentials.ts：同步写盘后同样要把行号、骨架、哈希对齐。 */
+export function syncFileState(fileId: number, newHash: string, content: string, now: number): void {
   const db = getDatabase()
   db.prepare('UPDATE env_files SET file_hash = ?, last_scanned_at = ? WHERE id = ?').run(
     newHash,
@@ -844,6 +926,17 @@ export function updateEntryValue(
   expectedHash: string
 ): EntryMutationResult {
   const { entry, file, currentHash, content: original } = requireEditableEntry(entryId, expectedHash)
+
+  // 🔴 真源只能有一个。这个变量归某个凭据管时，改动必须从凭据发起，
+  // 否则「改一次同步到多处」就成了空话 —— 每一处都能各自改的话，
+  // 它们迟早不一样，而且没有任何办法回答"哪个才算数"。
+  const binding = keyBindingOf(entry, file)
+  if (binding) {
+    throw new RepositoryError(
+      'PATH_REJECTED',
+      `这个变量由凭据「${binding.credential_name}」管理，请在模型凭据页修改后同步`
+    )
+  }
 
   const oldValue = entry.encrypted_value
     ? vault.decryptValue(Buffer.from(entry.encrypted_value))
@@ -945,10 +1038,15 @@ export function deleteEntry(entryId: number, expectedHash: string): EntryMutatio
       )
     : null
 
+  // 删除是允许的（变量真的要没了），但绑定必须跟着走 ——
+  // 留下一条指向已删变量的绑定，下次同步会静默地少写一处。
+  const binding = keyBindingOf(entry, file)
+
   const now = Date.now()
   const db = getDatabase()
   db.transaction(() => {
     db.prepare('DELETE FROM config_entries WHERE id = ?').run(entryId)
+    if (binding) db.prepare('DELETE FROM credential_bindings WHERE id = ?').run(binding.id)
     // 🔴 删掉重复 key 里的一条，会让它后面几条在文件里的序号整体前移。
     // 中心记录不跟着改，occurrence 就和磁盘对不上了 —— 下次编辑那个 key
     // 会按错误的序号去改**另一行**，而且不会报任何错。
@@ -965,9 +1063,14 @@ export function deleteEntry(entryId: number, expectedHash: string): EntryMutatio
     environment: file.environment,
     targetKind: 'entry',
     targetRef: entry.key,
-    detail: touchesDisk
-      ? `已从 ${toRelative(file.project_path, file.absolute_path)} 删除该变量`
-      : '磁盘文件里本来就没有这一行，只清除了中心记录'
+    detail: [
+      touchesDisk
+        ? `已从 ${toRelative(file.project_path, file.absolute_path)} 删除该变量`
+        : '磁盘文件里本来就没有这一行，只清除了中心记录',
+      binding ? `并解除了与凭据「${binding.credential_name}」的绑定` : null
+    ]
+      .filter(Boolean)
+      .join('；')
   })
 
   return {
@@ -1054,14 +1157,16 @@ function decryptOrPlaceholder(blob: Uint8Array | null): string {
   }
 }
 
-function toRelative(projectPath: string, absolutePath: string): string {
+/** 导出给 credentials.ts。 */
+export function toRelative(projectPath: string, absolutePath: string): string {
   const normalizedProject = projectPath.replace(/\\/g, '/')
   const normalized = absolutePath.replace(/\\/g, '/')
   if (!normalized.startsWith(normalizedProject)) return normalized
   return normalized.slice(normalizedProject.length).replace(/^\/+/, '')
 }
 
-function requireUnlocked(): void {
+/** 导出给 credentials.ts。 */
+export function requireUnlocked(): void {
   const status = vault.getStatus()
   if (status.state === 'unlocked') return
   if (status.state === 'uninitialized') {

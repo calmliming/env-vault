@@ -22,6 +22,7 @@ import {
 } from '@shared/ipc'
 import { getDatabaseInfo, initializeDatabase } from '../db'
 import * as repo from '../db/repositories'
+import * as credentials from '../db/credentials'
 import { RepositoryError } from '../db/repositories'
 import * as vault from '../security/vault'
 import { VaultError } from '../security/vault'
@@ -145,6 +146,34 @@ function asFileHash(value: unknown): string {
  * 但不能不设 —— 渲染层送来的字符串会被原样写进用户的文件。
  */
 const MAX_VALUE_BYTES = 64 * 1024
+
+/**
+ * 短文本入参（厂商 id、变量名、地址、备注……）。
+ *
+ * 超长的一律**截断**而不是拒绝：这些值只影响展示和匹配，
+ * 为一个多打了几个字的备注让整次保存失败没有道理。
+ * 但空值要不要接受由 `fallback` 决定 —— 变量名为空是真的不能往下走。
+ */
+function asShortText(value: unknown, field: string, max: number, fallback?: string): string {
+  if (value == null && fallback !== undefined) return fallback
+  if (typeof value !== 'string') {
+    throw new RepositoryError('INVALID_ARGUMENT', `参数 ${field} 必须是字符串`)
+  }
+  const trimmed = value.trim()
+  if (trimmed === '' && fallback === undefined) {
+    throw new RepositoryError('INVALID_ARGUMENT', `参数 ${field} 不能为空`)
+  }
+  return trimmed.slice(0, max)
+}
+
+const CREDENTIAL_STATUSES = new Set(['unverified', 'active', 'revoked'])
+
+function asCredentialStatus(value: unknown): 'unverified' | 'active' | 'revoked' {
+  if (typeof value !== 'string' || !CREDENTIAL_STATUSES.has(value)) {
+    throw new RepositoryError('INVALID_ARGUMENT', '未知的凭据状态')
+  }
+  return value as 'unverified' | 'active' | 'revoked'
+}
 
 function asEntryValue(value: unknown): string {
   if (typeof value !== 'string') {
@@ -274,6 +303,106 @@ export function registerIpcHandlers(): void {
     const result = repo.deleteEntry(
       asPositiveInt(body.entryId, 'entryId'),
       asFileHash(body.expectedHash)
+    )
+    void refreshWatchTargets()
+    return result
+  })
+
+  // --- 模型凭据（阶段 3）-----------------------------------------------------
+
+  handle(CHANNELS.credentialsProviders, () => credentials.listProviders())
+  handle(CHANNELS.credentialsList, () => credentials.listCredentials())
+
+  handle(CHANNELS.credentialsSuggest, (request) => {
+    const body = asRecord(request)
+    return credentials.suggestCredentials(asPositiveInt(body.projectId, 'projectId'))
+  })
+
+  handle(CHANNELS.credentialsCreate, (request) => {
+    const body = asRecord(request)
+    const bind = body.bind == null ? undefined : asRecord(body.bind)
+    return credentials.createCredential({
+      providerId: asShortText(body.providerId, 'providerId', 40),
+      credentialName: asShortText(body.credentialName, 'credentialName', 80, ''),
+      endpoint: asShortText(body.endpoint, 'endpoint', 300, ''),
+      apiKey: asEntryValue(body.apiKey),
+      notes: asShortText(body.notes, 'notes', 500, ''),
+      ...(bind
+        ? {
+            bind: {
+              projectId: asPositiveInt(bind.projectId, 'bind.projectId'),
+              environment: asShortText(bind.environment, 'bind.environment', 60),
+              keyVariable: asShortText(bind.keyVariable, 'bind.keyVariable', 200),
+              endpointVariable: asShortText(bind.endpointVariable, 'bind.endpointVariable', 200, '')
+            }
+          }
+        : {})
+    })
+  })
+
+  handle(CHANNELS.credentialsUpdate, (request) => {
+    const body = asRecord(request)
+    return credentials.updateCredential({
+      credentialId: asPositiveInt(body.credentialId, 'credentialId'),
+      ...(body.credentialName !== undefined
+        ? { credentialName: asShortText(body.credentialName, 'credentialName', 80, '') }
+        : {}),
+      ...(body.endpoint !== undefined
+        ? { endpoint: asShortText(body.endpoint, 'endpoint', 300, '') }
+        : {}),
+      ...(body.notes !== undefined ? { notes: asShortText(body.notes, 'notes', 500, '') } : {}),
+      ...(body.status !== undefined ? { status: asCredentialStatus(body.status) } : {}),
+      ...(body.apiKey !== undefined ? { apiKey: asEntryValue(body.apiKey) } : {})
+    })
+  })
+
+  handle(CHANNELS.credentialsReveal, (request) => {
+    const body = asRecord(request)
+    return credentials.revealCredentialKey(asPositiveInt(body.credentialId, 'credentialId'))
+  })
+
+  handle(CHANNELS.credentialsDelete, (request) => {
+    const body = asRecord(request)
+    return { removed: credentials.deleteCredential(asPositiveInt(body.credentialId, 'credentialId')) }
+  })
+
+  handle(CHANNELS.credentialsBind, (request) => {
+    const body = asRecord(request)
+    return credentials.bindCredential(asPositiveInt(body.credentialId, 'credentialId'), {
+      projectId: asPositiveInt(body.projectId, 'projectId'),
+      environment: asShortText(body.environment, 'environment', 60),
+      keyVariable: asShortText(body.keyVariable, 'keyVariable', 200),
+      endpointVariable: asShortText(body.endpointVariable, 'endpointVariable', 200, '')
+    })
+  })
+
+  handle(CHANNELS.credentialsUnbind, (request) => {
+    const body = asRecord(request)
+    return credentials.unbindCredential(asPositiveInt(body.bindingId, 'bindingId'))
+  })
+
+  handle(CHANNELS.credentialsSyncPreview, (request) => {
+    const body = asRecord(request)
+    return credentials.previewCredentialSync(asPositiveInt(body.credentialId, 'credentialId'))
+  })
+
+  // 同步会写多个 `.env` 文件，所以它也在「会改变监听基准」的那一组里。
+  handle(CHANNELS.credentialsSync, (request) => {
+    const body = asRecord(request)
+    if (!Array.isArray(body.targets)) {
+      throw new RepositoryError('INVALID_ARGUMENT', '参数 targets 必须是数组')
+    }
+    const targets = body.targets.map((item) => {
+      const target = asRecord(item)
+      return {
+        bindingId: asPositiveInt(target.bindingId, 'targets[].bindingId'),
+        // 每个目标各自带一个哈希：它们是不同的文件，共用一个哈希没有意义。
+        expectedHash: asFileHash(target.expectedHash)
+      }
+    })
+    const result = credentials.syncCredential(
+      asPositiveInt(body.credentialId, 'credentialId'),
+      targets
     )
     void refreshWatchTargets()
     return result

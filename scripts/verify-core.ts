@@ -18,6 +18,7 @@ import { join } from 'node:path'
 import { closeDatabase, getDatabaseInfo, initializeDatabase } from '../src/main/db'
 import { getSchemaVersion, migrate } from '../src/main/db/migrator'
 import * as repo from '../src/main/db/repositories'
+import * as cred from '../src/main/db/credentials'
 import * as vault from '../src/main/security/vault'
 import { VaultError } from '../src/main/security/vault'
 import { applyEdits, entriesOf, parseEnv, serializeEnv } from '../src/main/env/document.ts'
@@ -126,6 +127,10 @@ function buildFixture(): void {
       "DB_PASSWORD='pa#ss word'",
       'NEXTAUTH_SECRET="line1\\nline2"',
       'LOG_LEVEL=debug   # 只在本机开 debug',
+      // 阶段 3 专用：绑定、同步、轮换、删除都拿这一条练手。
+      // 不复用 OPENAI_API_KEY 是因为同步会覆盖它的值，而界面验收
+      // 还要靠那把 Key 验「没点显示就不给明文」。
+      'ANTHROPIC_API_KEY=sk-ant-api03-fixture-0123456789abcdef',
       // 三条而不是两条：删掉中间/开头的一条之后，剩下的序号必须整体前移。
       // 只有两条时，applyEdits 对越界序号的"夹到边界"会碰巧命中正确的那一行，
       // 于是"忘了重新编号"这个 bug 在两条的样本上是看不见的。
@@ -280,8 +285,8 @@ function run(): void {
   const entries = repo.listEntries({ projectId: project.id })
   const byKey = new Map(entries.map((e) => [e.key, e]))
 
-  // .env 4 条 + .env.local 7 条（含重复的 DUP 三条）+ .env.production 1 条
-  check('条目总数正确（含重复 key）', entries.length === 12, `共 ${entries.length} 条`)
+  // .env 4 条 + .env.local 8 条（含重复的 DUP 三条）+ .env.production 1 条
+  check('条目总数正确（含重复 key）', entries.length === 13, `共 ${entries.length} 条`)
   check(
     '重复 key 三条都在',
     entries.filter((e) => e.key === 'DUP').length === 3,
@@ -346,7 +351,7 @@ function run(): void {
   const localOnly = repo.listEntries({ projectId: project.id, environment: 'local' })
   check(
     '按环境筛选生效',
-    localOnly.length === 7 && localOnly.every((e) => e.environment === 'local'),
+    localOnly.length === 8 && localOnly.every((e) => e.environment === 'local'),
     `local 环境 ${localOnly.length} 条`
   )
 
@@ -898,6 +903,366 @@ function run(): void {
     '这一段跑完后只剩「磁盘上已消失」那一个差异',
     leftover.length === 1 && leftover[0]?.fileName === '.env.staging',
     leftover.map((f) => `${f.fileName}:${f.currentHash === null ? '已丢失' : '有改动'}`).join(', ')
+  )
+
+  // =========================================================================
+  // 阶段 3：模型凭据库
+  // =========================================================================
+
+  // --- 适配器是纯的：跑遍五家也不该产生任何出站流量 -------------------------
+  const providers = cred.listProviders()
+  check(
+    '首批五家厂商加自定义厂商都在（§8）',
+    providers.length === 6 && providers.some((p) => p.id === 'anthropic'),
+    providers.map((p) => p.providerName).join('、')
+  )
+
+  // --- 识别建议（§6.2 步骤 1）----------------------------------------------
+  const suggested = cred.suggestCredentials(project.id)
+  const anthropicSuggestion = suggested.find((s) => s.key === 'ANTHROPIC_API_KEY')
+  check(
+    '从变量里识别出模型凭据',
+    anthropicSuggestion !== undefined,
+    suggested.map((s) => s.key).join(', ') || '（无）'
+  )
+  check(
+    '按值识别：sk-ant- 指向 Anthropic',
+    anthropicSuggestion?.providers[0]?.providerId === "anthropic" &&
+      anthropicSuggestion.providers[0]?.basis === 'both',
+    `${anthropicSuggestion?.providers[0]?.providerName} / ${anthropicSuggestion?.providers[0]?.basis}`
+  )
+  check(
+    '普通变量不会被误判成凭据',
+    !suggested.some((s) => ['PORT', 'APP_NAME', 'ENABLE_CACHE'].includes(s.key)),
+    suggested.map((s) => s.key).join(', ') || '（无）'
+  )
+  check(
+    '🔴 识别建议里不含任何 Key 明文',
+    !NEEDLES.some((needle) => JSON.stringify(suggested).includes(needle)),
+    '只给变量名、环境与厂商候选'
+  )
+
+  // --- 创建凭据：明文加密入库 -----------------------------------------------
+  const ROTATED_KEY = 'sk-ant-api03-rotated-0123456789abcdef'
+  const primary = cred.createCredential({
+    providerId: 'anthropic',
+    credentialName: 'verify-primary',
+    endpoint: 'https://api.anthropic.com/v1',
+    apiKey: 'sk-ant-api03-original-0123456789abcdef'
+  })
+  check(
+    '凭据创建后只暴露指纹与末四位',
+    primary.lastFour === 'cdef' && primary.fingerprint.length === 16,
+    `lastFour=${primary.lastFour} fingerprint=${primary.fingerprint}`
+  )
+  check(
+    '🔴 凭据列表里没有 Key 明文',
+    !JSON.stringify(cred.listCredentials()).includes('sk-ant-api03-original'),
+    '只有指纹和末四位'
+  )
+
+  const credentialBlob = db
+    .prepare('SELECT encrypted_api_key AS v FROM model_credentials WHERE id = ?')
+    .get<{ v: Uint8Array }>(primary.id)
+  check(
+    '🔴 Key 加密落库',
+    credentialBlob !== undefined &&
+      !Buffer.from(credentialBlob.v).toString('latin1').includes('sk-ant-api03-original'),
+    `密文 ${credentialBlob?.v.length ?? 0} 字节`
+  )
+
+  // 指纹要能回答「这两处是不是同一把 Key」，且不能从指纹反推出 Key
+  const twin = cred.createCredential({
+    providerId: 'anthropic',
+    credentialName: 'verify-twin',
+    endpoint: 'https://api.anthropic.com/v1',
+    apiKey: 'sk-ant-api03-original-0123456789abcdef'
+  })
+  check(
+    '同一把 Key 在两条记录上得到相同指纹',
+    twin.fingerprint === primary.fingerprint,
+    `${primary.fingerprint} === ${twin.fingerprint}`
+  )
+  check(
+    '🔴 指纹里搜不到 Key 的任何片段',
+    !primary.fingerprint.includes('original') && !primary.fingerprint.includes('cdef'),
+    primary.fingerprint
+  )
+  cred.deleteCredential(twin.id)
+
+  // --- 绑定 -----------------------------------------------------------------
+  const bindings = cred.bindCredential(primary.id, {
+    projectId: project.id,
+    environment: 'local',
+    keyVariable: 'ANTHROPIC_API_KEY'
+  })
+  check(
+    '绑定建立成功并能定位到真实变量',
+    bindings.length === 1 && bindings[0]?.unresolved === false,
+    `${bindings[0]?.projectName} / ${bindings[0]?.environment} / ${bindings[0]?.keyVariable}`
+  )
+
+  let duplicateBind = ''
+  try {
+    cred.bindCredential(primary.id, {
+      projectId: project.id,
+      environment: 'local',
+      keyVariable: 'ANTHROPIC_API_KEY'
+    })
+  } catch (error) {
+    duplicateBind = error instanceof repo.RepositoryError ? error.code : String(error)
+  }
+  check(
+    '同一个变量不能重复绑定',
+    duplicateBind === 'ALREADY_EXISTS',
+    `code=${duplicateBind}`
+  )
+
+  // --- 🔴 绑定之后配置表里不能再就地改这个变量 ------------------------------
+  const boundEntry = entryOf('ANTHROPIC_API_KEY')
+  check(
+    '配置表仍然看得到这个变量和它的绑定状态（阶段 3 验收）',
+    boundEntry.managedBy?.credentialName === 'verify-primary' &&
+      boundEntry.managedBy.role === 'key',
+    `managedBy=${boundEntry.managedBy?.credentialName} / ${boundEntry.managedBy?.role}`
+  )
+
+  let managedEditRefused = ''
+  try {
+    repo.updateEntryValue(boundEntry.id, 'sk-hijacked', diskHashOf('.env.local'))
+  } catch (error) {
+    managedEditRefused = error instanceof repo.RepositoryError ? error.code : String(error)
+  }
+  check(
+    '🔴 归凭据管的变量不能在配置表里就地编辑（真源只有一个）',
+    managedEditRefused === 'PATH_REJECTED',
+    `code=${managedEditRefused}`
+  )
+  check(
+    '被拒绝后文件没有被改动',
+    readFileSync(localPath, 'utf8').includes('sk-ant-api03-fixture-0123456789abcdef'),
+    '磁盘上还是原来的值'
+  )
+
+  // --- 一改多同步（阶段 3 验收句）-------------------------------------------
+  const beforeSync = cred.previewCredentialSync(primary.id)
+  check(
+    '预览：绑定的那一处需要更新',
+    beforeSync.writable === 1 && beforeSync.targets[0]?.state === 'outdated',
+    `state=${beforeSync.targets[0]?.state} writable=${beforeSync.writable}`
+  )
+  check(
+    '🔴 同步预览里不含 Key 明文（只说哪里要改，不说改成什么）',
+    !NEEDLES.some((needle) => JSON.stringify(beforeSync).includes(needle)) &&
+      !JSON.stringify(beforeSync).includes('sk-ant-api03-original'),
+    '只有项目、环境、变量名与状态'
+  )
+
+  const localBeforeSync = readFileSync(localPath, 'utf8')
+  const synced = cred.syncCredential(primary.id, [
+    { bindingId: beforeSync.targets[0]!.bindingId, expectedHash: beforeSync.targets[0]!.expectedHash! }
+  ])
+  const localAfterSync = readFileSync(localPath, 'utf8')
+
+  check('同步写入了 1 处', synced.written === 1 && synced.failed === 0, `written=${synced.written}`)
+  check(
+    '凭据的 Key 落到了磁盘文件里',
+    localAfterSync.includes('sk-ant-api03-original-0123456789abcdef'),
+    'ANTHROPIC_API_KEY 已更新'
+  )
+  check(
+    '🔴 同步只改那一行，CRLF、注释与其余变量都保留',
+    JSON.stringify(localAfterSync.split('\r\n').filter((l) => !l.startsWith('ANTHROPIC_API_KEY='))) ===
+      JSON.stringify(localBeforeSync.split('\r\n').filter((l) => !l.startsWith('ANTHROPIC_API_KEY='))),
+    '其余行逐行相同'
+  )
+  check(
+    '中心记录跟着一起更新了',
+    repo.revealEntry(entryOf('ANTHROPIC_API_KEY').id).value ===
+      'sk-ant-api03-original-0123456789abcdef',
+    '记录与磁盘一致'
+  )
+  check(
+    '同步后该文件不再有差异',
+    repo.listFiles(project.id).find((f) => f.fileName === '.env.local')?.drifted === false,
+    '哈希已更新'
+  )
+
+  const afterSync = cred.previewCredentialSync(primary.id)
+  check(
+    '再预览一次变成「已一致」，不会重复写',
+    afterSync.writable === 0 && afterSync.targets[0]?.state === 'in-sync',
+    `state=${afterSync.targets[0]?.state}`
+  )
+
+  // --- 轮换：只改凭据，不碰文件 ---------------------------------------------
+  const beforeRotate = readFileSync(localPath, 'utf8')
+  const rotated = cred.updateCredential({ credentialId: primary.id, apiKey: ROTATED_KEY })
+  check(
+    '🔴 轮换只改凭据，文件一个字节都不动',
+    readFileSync(localPath, 'utf8') === beforeRotate,
+    '同步是独立的一步，不是保存的副作用'
+  )
+  check(
+    '轮换后指纹和末四位都变了',
+    rotated.fingerprint !== primary.fingerprint && rotated.lastFour === 'cdef',
+    `${primary.fingerprint} → ${rotated.fingerprint}`
+  )
+  check(
+    '轮换后预览显示需要更新',
+    cred.previewCredentialSync(primary.id).writable === 1,
+    '绑定处待同步'
+  )
+
+  // --- 🔴 并发守卫：预览之后文件又被改过 ------------------------------------
+  const stalePreview = cred.previewCredentialSync(primary.id)
+  writeFileSync(localPath, readFileSync(localPath, 'utf8') + 'OUTSIDER=1\r\n')
+
+  const conflicted = cred.syncCredential(primary.id, [
+    {
+      bindingId: stalePreview.targets[0]!.bindingId,
+      expectedHash: stalePreview.targets[0]!.expectedHash!
+    }
+  ])
+  check(
+    '🔴 预览之后文件被外部改过就跳过那个目标，不覆盖',
+    conflicted.written === 0 && conflicted.failed === 1,
+    conflicted.outcomes[0]?.reason ?? ''
+  )
+  check(
+    '别人的修改原封不动，Key 也没被写进去',
+    readFileSync(localPath, 'utf8').includes('OUTSIDER=1') &&
+      !readFileSync(localPath, 'utf8').includes(ROTATED_KEY),
+    '中止后未覆盖'
+  )
+
+  // 把外部改动收进来。这既是恢复现场，也让下一条断言能验到**另一道**守卫：
+  // 现在 stored === current，「文件有外部改动」那一关必过，
+  // 于是 stalePreview 里那个过期哈希只可能被并发校验拦下。
+  repo.adoptDiskFile(repo.listFiles(project.id).find((f) => f.fileName === '.env.local')!.id)
+
+  check(
+    '🔴 绑定按 (项目, 环境, 变量名) 配对，重建条目后依然有效',
+    cred.previewCredentialSync(primary.id).targets[0]?.state === 'outdated',
+    'adoptDiskFile 重建了 config_entries.id，绑定没跟着失效'
+  )
+
+  const staleHashSync = cred.syncCredential(primary.id, [
+    {
+      bindingId: stalePreview.targets[0]!.bindingId,
+      expectedHash: stalePreview.targets[0]!.expectedHash!
+    }
+  ])
+  check(
+    '🔴 调用方基于旧预览做的决定被跳过（expectedHash 过期，与上一条是两道不同的守卫）',
+    staleHashSync.written === 0 &&
+      staleHashSync.outcomes[0]?.reason?.includes('预览之后') === true,
+    staleHashSync.outcomes[0]?.reason ?? ''
+  )
+
+  // 收尾：把刚才制造并发场景用的 OUTSIDER 清掉。
+  // 界面验收拿的是这份沙箱，留着测试残留会让那边的「变量集合」断言多出一条 ——
+  // 而那条断言的价值正在于它精确。
+  repo.deleteEntry(entryOf('OUTSIDER').id, diskHashOf('.env.local'))
+
+  // --- 🔴 逐个目标报告，不是全有或全无 -------------------------------------
+  // 造一条指向不存在变量的绑定，和一条正常的一起同步：
+  // 正常的必须成功，坏的必须失败，而不是一起回滚。
+  db.prepare(
+    `INSERT INTO credential_bindings
+       (credential_id, project_id, environment, endpoint_variable, key_variable,
+        last_synced_hash, sync_mode, created_at)
+     VALUES (?, ?, 'production', NULL, 'NO_SUCH_VARIABLE', NULL, 'manual', ?)`
+  ).run(primary.id, project.id, Date.now())
+
+  const mixedPreview = cred.previewCredentialSync(primary.id)
+  const badTarget = mixedPreview.targets.find((t) => t.keyVariable === 'NO_SUCH_VARIABLE')
+  const goodTarget = mixedPreview.targets.find((t) => t.keyVariable === 'ANTHROPIC_API_KEY')
+  check(
+    '预览如实标出「这个环境里没有这个变量」',
+    badTarget?.state === 'missing-variable' && badTarget.expectedHash === null,
+    `state=${badTarget?.state}`
+  )
+
+  const mixed = cred.syncCredential(primary.id, [
+    { bindingId: goodTarget!.bindingId, expectedHash: goodTarget!.expectedHash! },
+    // 坏目标没有 expectedHash，用一个合法但对不上的串占位 —— 它会先被
+    // 「变量不存在」拦下，正好验证坏目标不会连累好目标。
+    { bindingId: badTarget!.bindingId, expectedHash: '0'.repeat(64) }
+  ])
+  check(
+    '🔴 一好一坏：好的写进去了，坏的单独报错，不是一起回滚',
+    mixed.written === 1 &&
+      mixed.failed === 1 &&
+      mixed.outcomes.some((o) => o.ok) &&
+      mixed.outcomes.some((o) => !o.ok),
+    mixed.outcomes.map((o) => `${o.environment}:${o.ok ? 'ok' : o.reason}`).join(' / ')
+  )
+  check(
+    '轮换后的新 Key 确实写到了文件里',
+    readFileSync(localPath, 'utf8').includes(ROTATED_KEY),
+    '好目标写入成功'
+  )
+  check(
+    '磁盘上不存在的变量不会被追加',
+    !readFileSync(join(fixtureRoot, 'apps', 'web', '.env.production'), 'utf8').includes(
+      'NO_SUCH_VARIABLE'
+    ),
+    '未静默追加'
+  )
+
+  // --- 删除变量时绑定要跟着走 -----------------------------------------------
+  const bindingsBeforeDelete = cred.previewCredentialSync(primary.id).targets.length
+  repo.deleteEntry(entryOf('ANTHROPIC_API_KEY').id, diskHashOf('.env.local'))
+  check(
+    '🔴 删掉被绑定的变量会连带解绑（否则下次同步会静默少写一处）',
+    cred.previewCredentialSync(primary.id).targets.length === bindingsBeforeDelete - 1,
+    `绑定 ${bindingsBeforeDelete} → ${cred.previewCredentialSync(primary.id).targets.length}`
+  )
+
+  // --- 删除凭据不动磁盘 -----------------------------------------------------
+  const localBeforeCredentialDelete = readFileSync(localPath, 'utf8')
+  cred.deleteCredential(primary.id)
+  check(
+    '删除凭据只清记录与绑定，磁盘文件不动',
+    cred.listCredentials().length === 0 &&
+      readFileSync(localPath, 'utf8') === localBeforeCredentialDelete,
+    '文件未改动'
+  )
+  check(
+    '凭据删掉后，绑定也随外键级联消失',
+    db.prepare('SELECT COUNT(*) AS n FROM credential_bindings').get<{ n: number }>()?.n === 0,
+    '级联删除生效'
+  )
+
+  // --- 🔴 凭据相关的记录里同样没有明文 --------------------------------------
+  const credentialLog = repo
+    .listActivity(300)
+    .filter((r) => r.action.startsWith('credential.'))
+  check(
+    '凭据的增删改绑同步都留了记录',
+    ['credential.create', 'credential.bind', 'credential.sync', 'credential.rotate',
+     'credential.delete'].every((action) => credentialLog.some((r) => r.action === action)),
+    [...new Set(credentialLog.map((r) => r.action))].join('、')
+  )
+  check(
+    '🔴 凭据操作记录里没有 Key 明文',
+    !JSON.stringify(credentialLog).includes('sk-ant-api03') &&
+      !NEEDLES.some((needle) => JSON.stringify(credentialLog).includes(needle)),
+    '只记厂商、凭据名与数量'
+  )
+
+  // 整库再扫一遍：阶段 3 新增了两张表，明文断言必须覆盖到它们。
+  const dbBytesAfterCredentials = [info.filePath, `${info.filePath}-wal`]
+    .filter((path) => existsSync(path))
+    .map((path) => readFileSync(path).toString('latin1'))
+    .join('')
+  const credentialNeedles = ['sk-ant-api03-original', ROTATED_KEY, ...NEEDLES]
+  const leakedAfter = credentialNeedles.filter((needle) => dbBytesAfterCredentials.includes(needle))
+  check(
+    '🔴 加上凭据两张表之后，数据库文件里仍然搜不到任何明文',
+    leakedAfter.length === 0,
+    leakedAfter.length === 0 ? `扫了 ${Math.round(dbBytesAfterCredentials.length / 1024)} KiB` : `命中: ${leakedAfter.join(', ')}`
   )
 
   // --- Vault 锁定后读不到值 -------------------------------------------------

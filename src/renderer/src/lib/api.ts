@@ -8,7 +8,14 @@
  * 靠匹配 message 字符串做这件事，会在改一次文案时静默失效。
  */
 
-import type { EntriesQuery, ImportProjectRequest, IpcErrorCode, IpcResult } from '@shared/ipc'
+import type {
+  CreateCredentialRequest,
+  EntriesQuery,
+  ImportProjectRequest,
+  IpcErrorCode,
+  IpcResult,
+  UpdateCredentialRequest
+} from '@shared/ipc'
 
 export interface CallFailure {
   ok: false
@@ -69,5 +76,31 @@ export const bridge = {
   adoptDiskFile: (fileId: number) => call(() => window.envvault.adoptDiskFile(fileId)),
   restoreFile: (fileId: number, keys: string[], expectedHash: string) =>
     call(() => window.envvault.restoreFile(fileId, keys, expectedHash)),
-  listActivity: (limit?: number) => call(() => window.envvault.listActivity(limit))
+  listActivity: (limit?: number) => call(() => window.envvault.listActivity(limit)),
+
+  // --- 模型凭据（阶段 3）---
+  listCredentials: () => call(() => window.envvault.listCredentials()),
+  listProviders: () => call(() => window.envvault.listProviders()),
+  suggestCredentials: (projectId: number) =>
+    call(() => window.envvault.suggestCredentials(projectId)),
+  createCredential: (request: CreateCredentialRequest) =>
+    call(() => window.envvault.createCredential(request)),
+  updateCredential: (request: UpdateCredentialRequest) =>
+    call(() => window.envvault.updateCredential(request)),
+  revealCredential: (credentialId: number) =>
+    call(() => window.envvault.revealCredential(credentialId)),
+  deleteCredential: (credentialId: number) =>
+    call(() => window.envvault.deleteCredential(credentialId)),
+  bindCredential: (request: {
+    credentialId: number
+    projectId: number
+    environment: string
+    keyVariable: string
+    endpointVariable?: string | null
+  }) => call(() => window.envvault.bindCredential(request)),
+  unbindCredential: (bindingId: number) => call(() => window.envvault.unbindCredential(bindingId)),
+  previewCredentialSync: (credentialId: number) =>
+    call(() => window.envvault.previewCredentialSync(credentialId)),
+  syncCredential: (credentialId: number, targets: { bindingId: number; expectedHash: string }[]) =>
+    call(() => window.envvault.syncCredential(credentialId, targets))
 }

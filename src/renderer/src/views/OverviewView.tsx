@@ -1,8 +1,8 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { bridge } from '../lib/api'
 import type { Workspace } from '../hooks/useWorkspace'
-import type { ConfigEntryView, EnvFileView } from '@shared/ipc'
+import type { ConfigEntryView, CredentialSuggestion, EnvFileView } from '@shared/ipc'
 
 interface OverviewViewProps {
   workspace: Workspace
@@ -12,6 +12,7 @@ interface OverviewViewProps {
   onOpenSync(): void
   onOpenDiff(file: EnvFileView): void
   onDeleteEntry(entry: ConfigEntryView, expectedHash: string): void
+  onExtractCredential(suggestion: CredentialSuggestion): void
   onVaultAction(): void
   showToast(message: string): void
 }
@@ -24,6 +25,7 @@ export function OverviewView({
   onOpenSync,
   onOpenDiff,
   onDeleteEntry,
+  onExtractCredential,
   onVaultAction,
   showToast
 }: OverviewViewProps): ReactNode {
@@ -49,6 +51,28 @@ export function OverviewView({
    * 否则用户会看到一个「已同步」的行，点保存却被主进程以「文件有外部改动」拒绝。
    */
   const fileById = useMemo(() => new Map(files.map((file) => [file.id, file])), [files])
+
+  /**
+   * 疑似模型凭据的变量（阶段 3，§6.2 步骤 1）。
+   *
+   * 跟着 entries 一起重算：提取成凭据之后那一条就该从建议里消失，
+   * 不重算的话用户会看到一个"再提取一次"的按钮。
+   */
+  const [suggestions, setSuggestions] = useState<CredentialSuggestion[]>([])
+  const projectId = selectedProject?.id ?? null
+
+  const loadSuggestions = useCallback(async () => {
+    if (projectId === null || locked) {
+      setSuggestions([])
+      return
+    }
+    const result = await bridge.suggestCredentials(projectId)
+    setSuggestions(result.ok ? result.data : [])
+  }, [projectId, locked])
+
+  useEffect(() => {
+    void loadSuggestions()
+  }, [loadSuggestions, entries])
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase()
@@ -105,12 +129,34 @@ export function OverviewView({
    * 选了 §6.4 的方向，把别人的修改覆盖掉。正确路径是先去差异面板选一个方向。
    * 主进程侧同样会拦（那才是真正的守卫），这里只是别把用户引到死路上。
    */
-  function editBlockedReason(entry: ConfigEntryView): string | null {
+  /**
+   * 文件层面挡住写入的原因。编辑和删除都受它约束。
+   *
+   * 注意这和「状态」列的 drifted 是同一件事，但和下面的"归凭据管"不是 ——
+   * 三个概念混成一个布尔值的话，一个归凭据管的变量会在状态列里
+   * 被显示成「有差异」，而它的文件其实好好的。
+   */
+  function fileBlockedReason(entry: ConfigEntryView): string | null {
     const file = fileById.get(entry.fileId)
     if (!file) return '找不到这个变量的来源文件记录'
     if (file.currentHash === null) return '来源文件已从磁盘消失'
     if (file.drifted) return '来源文件在外部被改过，请先在「文件健康度」里处理差异'
     return null
+  }
+
+  /**
+   * 编辑还多一条限制：🔴 归凭据管的变量真源在凭据那边，
+   * 就地改会造成两个真源。主进程侧同样会拒（那才是守卫），
+   * 这里只是别把用户引到死路上。
+   *
+   * 删除**不受**这条限制 —— 变量真的要没了是合理的，
+   * 那时绑定会跟着一起解除。
+   */
+  function editBlockedReason(entry: ConfigEntryView): string | null {
+    if (entry.managedBy?.role === 'key') {
+      return `由凭据「${entry.managedBy.credentialName}」管理，请到「模型凭据」页修改后同步`
+    }
+    return fileBlockedReason(entry)
   }
 
   /** 用户看到这一行时文件的磁盘哈希，作为「我这个决定基于哪个版本」送给主进程。 */
@@ -347,8 +393,10 @@ export function OverviewView({
                 filtered.map((entry) => {
                   const plain = revealed.get(entry.id)
                   const shown = plain ?? entry.displayValue
-                  const blocked = editBlockedReason(entry)
-                  const drifted = blocked !== null
+                  const fileBlocked = fileBlockedReason(entry)
+                  const editBlocked = editBlockedReason(entry)
+                  // 状态列说的是**文件**的事，不该被"归凭据管"污染。
+                  const drifted = fileBlocked !== null
                   const isEditing = editing?.id === entry.id
                   // 敏感项还没点过「显示」时是盲写：编辑框空着，空值不等于"清空"，
                   // 而是"还没输入"。要真的把它清空，先点显示、再删掉预填的内容。
@@ -436,9 +484,9 @@ export function OverviewView({
                             <button
                               className="mini-btn"
                               data-action="edit"
-                              title={blocked ?? '编辑并写回文件'}
+                              title={editBlocked ?? '编辑并写回文件'}
                               aria-label={`编辑 ${entry.key}`}
-                              disabled={drifted}
+                              disabled={editBlocked !== null}
                               onClick={() => beginEdit(entry)}
                             >
                               ✎
@@ -446,9 +494,14 @@ export function OverviewView({
                             <button
                               className="mini-btn danger"
                               data-action="delete"
-                              title={blocked ?? '删除变量，并从文件里删掉那一行'}
+                              title={
+                                fileBlocked ??
+                                (entry.managedBy
+                                  ? '删除变量并解除凭据绑定，同时从文件里删掉那一行'
+                                  : '删除变量，并从文件里删掉那一行')
+                              }
                               aria-label={`删除 ${entry.key}`}
-                              disabled={drifted}
+                              disabled={fileBlocked !== null}
                               onClick={() => requestDelete(entry)}
                             >
                               ✕
@@ -463,6 +516,20 @@ export function OverviewView({
                         <span className="source-tag" title={entry.sourceFile}>
                           {entry.sourceFile}
                         </span>
+                        {/*
+                          阶段 3 验收要求「通用配置页面仍能看到原始来源和绑定状态」：
+                          变量留在表里，来源照旧显示，另外标出它归哪条凭据管。
+                        */}
+                        {entry.managedBy && (
+                          <span
+                            className="binding-tag"
+                            data-role={entry.managedBy.role}
+                            title={`${entry.managedBy.providerName} / ${entry.managedBy.credentialName}`}
+                          >
+                            {entry.managedBy.role === 'key' ? '凭据 Key' : '凭据地址'} ·{' '}
+                            {entry.managedBy.credentialName}
+                          </span>
+                        )}
                       </td>
                       <td>
                         <span className={drifted ? 'status warn' : 'status'}>
@@ -478,18 +545,46 @@ export function OverviewView({
         </section>
 
         <div className="side-stack">
+          {/*
+            §6.2 步骤 1~3：给出厂商建议 → 保留原始配置记录 → 用户确认后创建凭据。
+            这里只做「建议」，创建永远要用户点一下 —— 值优先、名字兜底，
+            两个信号冲突时两家都列出来，不替用户下结论。
+          */}
           <section className="panel">
             <div className="panel-head">
               <div>
-                <div className="panel-title">模型凭据</div>
-                <div className="panel-kicker">只记录地址与 Key</div>
+                <div className="panel-title">疑似模型凭据</div>
+                <div className="panel-kicker">
+                  {suggestions.length > 0 ? `${suggestions.length} 个待处理` : '只记录地址与 Key'}
+                </div>
               </div>
             </div>
             <div className="health">
-              <p className="panel-empty">
-                凭据库在阶段 3 接入。届时会从上面这些变量里识别厂商，
-                并把地址与 Key 提到独立实体中管理。
-              </p>
+              {locked && <p className="panel-empty">解锁后才能识别。</p>}
+              {!locked && suggestions.length === 0 && (
+                <p className="panel-empty">
+                  这个项目里没有识别出未纳管的模型凭据。已经提取过的变量不会重复出现在这里。
+                </p>
+              )}
+              {!locked &&
+                suggestions.map((suggestion) => (
+                  <div className="health-item" key={suggestion.entryId}>
+                    <div>
+                      <div className="health-name">{suggestion.key}</div>
+                      <div className="health-path">
+                        {suggestion.providers.map((provider) => provider.providerName).join(' 或 ')}
+                        {suggestion.providers.length > 1 && ' · 需确认'} · {suggestion.environment}
+                      </div>
+                    </div>
+                    <button
+                      className="outline-btn tiny"
+                      data-action="extract-credential"
+                      onClick={() => onExtractCredential(suggestion)}
+                    >
+                      提取
+                    </button>
+                  </div>
+                ))}
             </div>
           </section>
 

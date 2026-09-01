@@ -29,6 +29,17 @@ export const CHANNELS = {
   entriesReveal: 'entries:reveal',
   entriesUpdate: 'entries:update',
   entriesDelete: 'entries:delete',
+  credentialsList: 'credentials:list',
+  credentialsProviders: 'credentials:providers',
+  credentialsSuggest: 'credentials:suggest',
+  credentialsCreate: 'credentials:create',
+  credentialsUpdate: 'credentials:update',
+  credentialsReveal: 'credentials:reveal',
+  credentialsDelete: 'credentials:delete',
+  credentialsBind: 'credentials:bind',
+  credentialsUnbind: 'credentials:unbind',
+  credentialsSyncPreview: 'credentials:sync-preview',
+  credentialsSync: 'credentials:sync',
   filesList: 'files:list',
   filesDiff: 'files:diff',
   filesAdopt: 'files:adopt',
@@ -186,12 +197,30 @@ export interface ConfigEntryView {
   fileId: number
   /** 来源文件在磁盘上已经和入库时不一致。 */
   fileDrifted: boolean
+  /** 非 null 表示这个变量由某个模型凭据管理，就地编辑入口关闭。 */
+  managedBy: EntryBindingRef | null
 }
 
 export interface EntriesQuery {
   projectId: number
   /** 省略表示所有环境。 */
   environment?: string
+}
+
+/**
+ * 这个变量已经被提成模型凭据了（阶段 3）。
+ *
+ * 变量本身**仍然留在配置表里** —— §6.2 步骤 2「同时保留原始通用配置记录」，
+ * 阶段 3 的验收也要求「通用配置页面仍能看到原始来源和绑定状态」。
+ * 只是编辑入口挪到了凭据页：真源只能有一个，否则「改一次同步到多处」没有意义。
+ */
+export interface EntryBindingRef {
+  bindingId: number
+  credentialId: number
+  credentialName: string
+  providerName: string
+  /** 这个变量在绑定里扮演的角色。 */
+  role: 'key' | 'endpoint'
 }
 
 export interface EnvFileView {
@@ -301,6 +330,172 @@ export interface RestoreResult {
   newHash: string
 }
 
+// ---------------------------------------------------------------------------
+// 模型凭据（阶段 3）
+// ---------------------------------------------------------------------------
+
+export interface ProviderInfo {
+  id: string
+  providerName: string
+  defaultEndpoint: string
+}
+
+/** 识别建议的依据。界面要如实说明，不能只给个厂商名了事。 */
+export type SuggestionBasis = 'value' | 'variable-name' | 'both'
+
+export interface ProviderChoice {
+  providerId: string
+  providerName: string
+  basis: SuggestionBasis
+}
+
+/**
+ * 「这个变量看起来是一把模型凭据」。
+ *
+ * 🔴 不含 Key 的明文，连掩码值都不给 —— 这是一个一览列表，
+ * 用户还没有对任何一条做出决定，没有理由在这里解密。
+ */
+export interface CredentialSuggestion {
+  entryId: number
+  key: string
+  environment: string
+  sourceFile: string
+  /** 按可信度排好序的候选厂商；长度 >1 说明变量名和值指向了不同的家。 */
+  providers: ProviderChoice[]
+  /** 同一环境里疑似的地址变量名，供预填。 */
+  endpointVariable: string | null
+  endpointPreview: string | null
+}
+
+export type CredentialStatus = 'unverified' | 'active' | 'revoked'
+
+export interface CredentialSummary {
+  id: number
+  providerName: string
+  providerId: string
+  credentialName: string
+  endpoint: string
+  /** Key 的末四位。太短的 Key 不给尾号。 */
+  lastFour: string
+  /** 同一把 Key 在不同项目里会得到相同的指纹，用来回答「这是同一把吗」。 */
+  fingerprint: string
+  status: CredentialStatus
+  bindingCount: number
+  createdAt: number
+  lastValidatedAt: number | null
+  notes: string | null
+}
+
+export interface CredentialBindingView {
+  id: number
+  credentialId: number
+  projectId: number
+  projectName: string
+  environment: string
+  keyVariable: string
+  endpointVariable: string | null
+  /** 这个环境里找不到对应的文件或变量时为 true，界面要标出来。 */
+  unresolved: boolean
+}
+
+export interface CreateCredentialRequest {
+  providerId: string
+  credentialName: string
+  endpoint: string
+  apiKey: string
+  notes?: string
+  /** 同时建立一条绑定。留空则只入库不绑定。 */
+  bind?: {
+    projectId: number
+    environment: string
+    keyVariable: string
+    endpointVariable?: string | null
+  }
+}
+
+export interface UpdateCredentialRequest {
+  credentialId: number
+  credentialName?: string
+  endpoint?: string
+  notes?: string | null
+  status?: CredentialStatus
+  /** 轮换：换一把新 Key。只改凭据本身，同步到文件是单独一步。 */
+  apiKey?: string
+}
+
+/** 同步预览里单个目标的状态。 */
+export type SyncTargetState =
+  /** 文件里的值已经和凭据一致，不需要写。 */
+  | 'in-sync'
+  /** 需要写入。 */
+  | 'outdated'
+  /** 绑定指定的变量在这个环境的文件里不存在。不会被静默追加。 */
+  | 'missing-variable'
+  /** 文件有未处理的外部改动，写下去会覆盖别人的修改。 */
+  | 'file-drifted'
+  /** 文件已从磁盘消失。 */
+  | 'file-missing'
+
+export interface SyncTarget {
+  bindingId: number
+  projectId: number
+  projectName: string
+  environment: string
+  /** 项目内相对路径；无法定位文件时为 null。 */
+  relativePath: string | null
+  keyVariable: string
+  state: SyncTargetState
+  /**
+   * 这个目标文件当前的磁盘哈希，`credentials:sync` 要原样带回来做并发校验。
+   * 无法定位文件时为 null。
+   */
+  expectedHash: string | null
+}
+
+/**
+ * 一改多同步的预览。
+ *
+ * 🔴 只说「哪些地方要改」，不说「改成什么」—— 预览是一览视图，
+ * 把 Key 铺在上面等于绕过 reveal 的审计（和差异面板同一条规矩）。
+ */
+export interface CredentialSyncPreview {
+  credentialId: number
+  credentialName: string
+  providerName: string
+  targets: SyncTarget[]
+  /** 可写入的目标数（state === 'outdated'）。 */
+  writable: number
+}
+
+export interface SyncOutcome {
+  bindingId: number
+  projectName: string
+  environment: string
+  relativePath: string | null
+  ok: boolean
+  /** 失败或跳过的原因，面向用户的中文短句。成功时为 null。 */
+  reason: string | null
+}
+
+/**
+ * 同步结果。**逐个目标报告**，不是全有或全无：
+ * 跨多个文件的写入没法原子回滚，一个文件写成功另一个冲突时，
+ * 谎称"整体失败"会让用户以为第一个文件没被改。
+ */
+export interface CredentialSyncResult {
+  credentialId: number
+  written: number
+  failed: number
+  outcomes: SyncOutcome[]
+}
+
+export interface CredentialRevealResult {
+  id: number
+  credentialName: string
+  /** 明文。只在这个通道返回，每次调用都留一条操作记录。 */
+  apiKey: string
+}
+
 /** 监听到的文件变化，由主进程主动推送。 */
 export interface FileChangedEvent {
   fileId: number
@@ -349,6 +544,50 @@ export interface IpcContract {
   [CHANNELS.entriesDelete]: {
     request: { entryId: number; expectedHash: string }
     response: EntryMutationResult
+  }
+  [CHANNELS.credentialsList]: { request: void; response: CredentialSummary[] }
+  [CHANNELS.credentialsProviders]: { request: void; response: ProviderInfo[] }
+  [CHANNELS.credentialsSuggest]: {
+    request: { projectId: number }
+    response: CredentialSuggestion[]
+  }
+  [CHANNELS.credentialsCreate]: {
+    request: CreateCredentialRequest
+    response: CredentialSummary
+  }
+  [CHANNELS.credentialsUpdate]: {
+    request: UpdateCredentialRequest
+    response: CredentialSummary
+  }
+  [CHANNELS.credentialsReveal]: {
+    request: { credentialId: number }
+    response: CredentialRevealResult
+  }
+  [CHANNELS.credentialsDelete]: {
+    request: { credentialId: number }
+    response: { removed: boolean }
+  }
+  [CHANNELS.credentialsBind]: {
+    request: {
+      credentialId: number
+      projectId: number
+      environment: string
+      keyVariable: string
+      endpointVariable?: string | null
+    }
+    response: CredentialBindingView[]
+  }
+  [CHANNELS.credentialsUnbind]: {
+    request: { bindingId: number }
+    response: CredentialBindingView[]
+  }
+  [CHANNELS.credentialsSyncPreview]: {
+    request: { credentialId: number }
+    response: CredentialSyncPreview
+  }
+  [CHANNELS.credentialsSync]: {
+    request: { credentialId: number; targets: { bindingId: number; expectedHash: string }[] }
+    response: CredentialSyncResult
   }
   [CHANNELS.filesList]: { request: { projectId: number }; response: EnvFileView[] }
   [CHANNELS.filesDiff]: { request: { fileId: number }; response: FileDiff }
@@ -421,6 +660,30 @@ export interface EnvVaultApi {
   ): Promise<IpcResult<EntryMutationResult>>
   /** 删一个变量：清掉中心记录，并把磁盘文件里的那一行一起删掉。 */
   deleteEntry(entryId: number, expectedHash: string): Promise<IpcResult<EntryMutationResult>>
+  // --- 模型凭据（阶段 3）---
+  listCredentials(): Promise<IpcResult<CredentialSummary[]>>
+  listProviders(): Promise<IpcResult<ProviderInfo[]>>
+  suggestCredentials(projectId: number): Promise<IpcResult<CredentialSuggestion[]>>
+  createCredential(request: CreateCredentialRequest): Promise<IpcResult<CredentialSummary>>
+  updateCredential(request: UpdateCredentialRequest): Promise<IpcResult<CredentialSummary>>
+  /** 明文 Key。只有这一个通道会返回它，且每次调用都留痕。 */
+  revealCredential(credentialId: number): Promise<IpcResult<CredentialRevealResult>>
+  deleteCredential(credentialId: number): Promise<IpcResult<{ removed: boolean }>>
+  bindCredential(request: {
+    credentialId: number
+    projectId: number
+    environment: string
+    keyVariable: string
+    endpointVariable?: string | null
+  }): Promise<IpcResult<CredentialBindingView[]>>
+  unbindCredential(bindingId: number): Promise<IpcResult<CredentialBindingView[]>>
+  previewCredentialSync(credentialId: number): Promise<IpcResult<CredentialSyncPreview>>
+  /** `targets` 里的 expectedHash 来自预览，语义同 restoreFile：对不上就跳过那个目标。 */
+  syncCredential(
+    credentialId: number,
+    targets: { bindingId: number; expectedHash: string }[]
+  ): Promise<IpcResult<CredentialSyncResult>>
+
   listFiles(projectId: number): Promise<IpcResult<EnvFileView[]>>
   diffFile(fileId: number): Promise<IpcResult<FileDiff>>
   adoptDiskFile(fileId: number): Promise<IpcResult<AdoptResult>>

@@ -27,6 +27,7 @@ const PORT = 9333
 const ELECTRON = join(process.cwd(), 'node_modules', 'electron', 'dist', 'electron.exe')
 const OVERVIEW_SHOT = join(process.cwd(), 'out', 'verify-ui-overview.png')
 const ACTIVITY_SHOT = join(process.cwd(), 'out', 'verify-ui-activity.png')
+const CREDENTIALS_SHOT = join(process.cwd(), 'out', 'verify-ui-credentials.png')
 const sandbox = mkdtempSync(join(tmpdir(), 'envvault-ui-'))
 
 /** 样例数据里那把假 Key。整个流程都在确认它不会意外出现在页面上。 */
@@ -140,7 +141,7 @@ async function runChecks() {
   check('没有通用 invoke 逃生口', isolation.genericInvoke === 'undefined', `typeof=${isolation.genericInvoke}`)
   check(
     'preload 只暴露白名单方法',
-    isolation.bridgeType === 'object' && isolation.bridgeKeys.length === 22,
+    isolation.bridgeType === 'object' && isolation.bridgeKeys.length === 33,
     `${isolation.bridgeKeys.length} 个：${isolation.bridgeKeys.join(', ')}`
   )
 
@@ -416,7 +417,289 @@ async function runChecks() {
   check('中心记录已更新为磁盘上的新值', adopted.portValue === '19999', `PORT=${adopted.portValue}`)
   check('处理完差异后徽章回到一致', adopted.envBadge === '一致', `徽章=${adopted.envBadge}`)
 
+  // --- 模型凭据：从变量提取 → 绑定 → 一改多同步（阶段 3）--------------------
+  //
+  // verify-core 已经把凭据层逐条验过了，这里验的是**界面到磁盘这条链**：
+  // 点了按钮之后，中心记录和 `.env` 文件两头都要对上。
+
+  // 配置总览的侧栏应该已经识别出疑似凭据（BRAND_NEW 的值在核心验收里
+  // 被改成了一把 Anthropic 形状的 Key）。
+  const suggest = await evaluate(`(async () => {
+    const wait = (ms) => new Promise(r => setTimeout(r, ms));
+    for (let i = 0; i < 30; i++) {
+      await wait(150);
+      if (document.querySelector('[data-action="extract-credential"]')) break;
+    }
+    const items = [...document.querySelectorAll('.side-stack .health-item')]
+      .filter(el => el.querySelector('[data-action="extract-credential"]'))
+      .map(el => ({
+        key: el.querySelector('.health-name')?.textContent.trim() ?? '',
+        detail: el.querySelector('.health-path')?.textContent.trim() ?? ''
+      }));
+    return { items, bodyHasSecret: document.body.innerText.includes(${JSON.stringify(FIXTURE_SECRET)}) };
+  })()`, true)
+
+  check(
+    '配置总览识别出疑似模型凭据',
+    suggest.items.some((item) => item.key === 'BRAND_NEW'),
+    suggest.items.map((i) => `${i.key}(${i.detail})`).join(' / ') || '（空）'
+  )
+  check(
+    '建议里说明了识别到的厂商',
+    suggest.items.find((i) => i.key === 'BRAND_NEW')?.detail.includes('Anthropic') === true,
+    suggest.items.find((i) => i.key === 'BRAND_NEW')?.detail ?? ''
+  )
+
+  // 提取 → 填 Key → 保存并绑定
+  const CREDENTIAL_KEY = 'sk-ant-api03-ui-verify-0123456789abcdef'
+  const extract = await evaluate(`(async () => {
+    const wait = (ms) => new Promise(r => setTimeout(r, ms));
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    const type = (el, value) => {
+      setter.call(el, value);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+
+    [...document.querySelectorAll('.side-stack .health-item')]
+      .find(el => el.querySelector('.health-name')?.textContent.trim() === 'BRAND_NEW')
+      ?.querySelector('[data-action="extract-credential"]')?.click();
+    for (let i = 0; i < 30; i++) {
+      await wait(100);
+      if (document.querySelector('#credential-key')) break;
+    }
+    const title = document.querySelector('#modal-title')?.textContent ?? '';
+    const keyField = document.querySelector('#credential-key');
+    const prefilledKey = keyField.value;
+    const keyFieldType = keyField.type;
+    const provider = document.querySelector('#provider-name')?.value ?? '';
+
+    type(keyField, ${JSON.stringify(CREDENTIAL_KEY)});
+    await wait(80);
+    document.querySelector('.modal-actions .primary-btn').click();
+    for (let i = 0; i < 40; i++) {
+      await wait(150);
+      if (!document.querySelector('.modal-layer')) break;
+    }
+    return { title, prefilledKey, keyFieldType, provider, closed: !document.querySelector('.modal-layer') };
+  })()`, true)
+
+  check('从变量提取凭据的弹窗能打开', extract.title === '从变量提取凭据', extract.title)
+  check(
+    '按值识别把厂商预选成了 Anthropic',
+    extract.provider === 'anthropic',
+    `provider=${extract.provider}`
+  )
+  check(
+    '🔴 Key 输入框是 password 且不预填 —— 不替用户把已有的 Key 读出来',
+    extract.keyFieldType === 'password' && extract.prefilledKey === '',
+    `type=${extract.keyFieldType} 预填=${JSON.stringify(extract.prefilledKey)}`
+  )
+  check('保存后弹窗关闭', extract.closed === true, `closed=${extract.closed}`)
+
+  // 回到配置表：那一行还在，但标了「由凭据管理」，编辑入口关掉了
+  const managed = await evaluate(`(async () => {
+    const wait = (ms) => new Promise(r => setTimeout(r, ms));
+    for (let i = 0; i < 30; i++) {
+      await wait(150);
+      if (document.querySelector('.binding-tag')) break;
+    }
+    const row = [...document.querySelectorAll('.config-table tbody tr')]
+      .find(tr => tr.querySelector('.key-name')?.textContent.trim() === 'BRAND_NEW');
+    if (!row) return { missingRow: true };
+    return {
+      present: true,
+      source: row.querySelector('.source-tag')?.textContent.trim() ?? '',
+      bindingTag: row.querySelector('.binding-tag')?.textContent.trim() ?? '',
+      editDisabled: row.querySelector('[data-action="edit"]').disabled,
+      editHint: row.querySelector('[data-action="edit"]').title,
+      deleteDisabled: row.querySelector('[data-action="delete"]').disabled,
+      status: row.querySelector('.status')?.textContent.trim() ?? ''
+    };
+  })()`, true)
+
+  check(
+    '🔴 提取后变量仍留在配置表里，来源照旧显示（阶段 3 验收）',
+    managed.present === true && managed.source === '.env',
+    managed.missingRow ? '找不到 BRAND_NEW 行' : `来源=${managed.source}`
+  )
+  check(
+    '并标出它归哪条凭据管',
+    typeof managed.bindingTag === 'string' && managed.bindingTag.includes('凭据 Key'),
+    managed.bindingTag ?? ''
+  )
+  check(
+    '🔴 归凭据管之后，就地编辑入口关闭并说明原因',
+    managed.editDisabled === true && managed.editHint.includes('模型凭据'),
+    managed.editHint ?? ''
+  )
+  check(
+    '删除仍然可用（变量真的要没了是合理的，绑定会跟着解除）',
+    managed.deleteDisabled === false,
+    `disabled=${managed.deleteDisabled}`
+  )
+  check(
+    '状态列说的仍然是文件的事，没被「归凭据管」污染',
+    managed.status.includes('已同步'),
+    managed.status ?? ''
+  )
+
+  // 凭据页：轮换 → 同步预览 → 写入
+  const ROTATED_UI_KEY = 'sk-ant-api03-ui-rotated-0123456789abcd'
+  const credentialPage = await evaluate(`(async () => {
+    const wait = (ms) => new Promise(r => setTimeout(r, ms));
+    [...document.querySelectorAll('.nav button')].find(b => b.textContent.includes('模型凭据')).click();
+    for (let i = 0; i < 30; i++) {
+      await wait(150);
+      if (document.querySelector('.credential-table tbody tr')) break;
+    }
+    const row = document.querySelector('.credential-table tbody tr');
+    return {
+      rows: document.querySelectorAll('.credential-table tbody tr[data-credential]').length,
+      // 取 Key 那一格，不是行里第一个 .value（那是调用地址）。
+      keyCell: row?.querySelector('.value-cell .value')?.textContent.trim() ?? '',
+      masked: !!row?.querySelector('.value.masked'),
+      bindings: row?.querySelector('[data-action="toggle-bindings"]')?.textContent.trim() ?? '',
+      bodyHasKey: document.body.innerText.includes(${JSON.stringify(CREDENTIAL_KEY)}),
+      // 六列的凭据表最容易把「操作」那一列挤出可视区。文档级横向滚动条
+      // 由别处的断言守着，但内容区自己横向溢出同样是列被切掉。
+      paneOverflowsX: (() => {
+        const pane = document.querySelector('.main-scroll');
+        return pane ? pane.scrollWidth > pane.clientWidth : null;
+      })(),
+      actionsVisible: [...document.querySelectorAll('.credential-actions button')]
+        .map(b => b.textContent.trim())
+    };
+  })()`, true)
+
+  check('凭据页列出了刚创建的凭据', credentialPage.rows === 1, `${credentialPage.rows} 条`)
+  check(
+    '🔴 列表里 Key 是掩码的，页面上搜不到明文',
+    credentialPage.masked === true && credentialPage.bodyHasKey === false,
+    `显示=${credentialPage.keyCell} 含明文=${credentialPage.bodyHasKey}`
+  )
+  check(
+    '绑定数来自真实数据',
+    credentialPage.bindings.startsWith('1'),
+    credentialPage.bindings ?? ''
+  )
+  check(
+    '凭据表不横向溢出，操作列完整可见',
+    credentialPage.paneOverflowsX === false &&
+      ['绑定', '轮换', '同步', '删除'].every((label) =>
+        credentialPage.actionsVisible.includes(label)
+      ),
+    `横向溢出=${credentialPage.paneOverflowsX} 操作=${(credentialPage.actionsVisible ?? []).join('/')}`
+  )
+
+  await capture(CREDENTIALS_SHOT)
+
+  const rotate = await evaluate(`(async () => {
+    const wait = (ms) => new Promise(r => setTimeout(r, ms));
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    [...document.querySelectorAll('.credential-actions button')]
+      .find(b => b.textContent.trim() === '轮换').click();
+    for (let i = 0; i < 30; i++) {
+      await wait(100);
+      if (document.querySelector('#credential-key')) break;
+    }
+    const field = document.querySelector('#credential-key');
+    setter.call(field, ${JSON.stringify(ROTATED_UI_KEY)});
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    await wait(80);
+    document.querySelector('.modal-actions .primary-btn').click();
+    for (let i = 0; i < 40; i++) {
+      await wait(150);
+      if (!document.querySelector('.modal-layer')) break;
+    }
+    return { closed: !document.querySelector('.modal-layer') };
+  })()`, true)
+
+  check('轮换弹窗保存后关闭', rotate.closed === true, `closed=${rotate.closed}`)
+  check(
+    '🔴 创建凭据和轮换都没有偷偷改文件 —— 写盘是独立的一步',
+    // 到这里为止文件里仍然是核心验收留下的那把 Key：
+    // 「提取」只是建立记录和绑定，「轮换」只换凭据，两者都不写盘。
+    readFileSync(fixtureEnv, 'utf8').includes('sk-ant-api03-verify-') &&
+      !readFileSync(fixtureEnv, 'utf8').includes(ROTATED_UI_KEY) &&
+      !readFileSync(fixtureEnv, 'utf8').includes(CREDENTIAL_KEY),
+    readFileSync(fixtureEnv, 'utf8').split('\n').find((l) => l.startsWith('BRAND_NEW=')) ?? ''
+  )
+
+  const sync = await evaluate(`(async () => {
+    const wait = (ms) => new Promise(r => setTimeout(r, ms));
+    document.querySelector('[data-action="sync-credential"]').click();
+    for (let i = 0; i < 40; i++) {
+      await wait(150);
+      if (document.querySelector('.diff-list') || document.querySelector('[data-action="apply-sync"]')) break;
+    }
+    await wait(200);
+    const applyBtn = () => document.querySelector('[data-action="apply-sync"]');
+    const before = {
+      title: document.querySelector('#modal-title')?.textContent ?? '',
+      rows: [...document.querySelectorAll('.diff-row')].map(el => ({
+        // 项目名和环境是相邻的两个 span，直接取 textContent 会连成一串。
+        key: [...el.querySelectorAll('.diff-key, .diff-key *')]
+          .slice(0, 1)
+          .map(n => n.childNodes[0]?.textContent?.trim() ?? '')
+          .join(''),
+        env: el.querySelector('.diff-occurrence')?.textContent.trim() ?? '',
+        state: el.querySelector('.diff-state')?.textContent.trim() ?? ''
+      })),
+      applyDisabled: applyBtn()?.disabled ?? null,
+      modalHasKey: (document.querySelector('.modal-body')?.innerText ?? '')
+        .includes(${JSON.stringify(ROTATED_UI_KEY)})
+    };
+    // 勾上唯一那个目标再写入
+    document.querySelector('.diff-row input:not([disabled])')?.click();
+    await wait(150);
+    const afterCheck = applyBtn()?.disabled ?? null;
+    applyBtn()?.click();
+    for (let i = 0; i < 40; i++) {
+      await wait(150);
+      if (!document.querySelector('.modal-layer')) break;
+    }
+    return { ...before, afterCheck, closed: !document.querySelector('.modal-layer') };
+  })()`, true)
+
+  check('同步预览打开并列出绑定目标', sync.title.startsWith('同步'), sync.title)
+  check(
+    '预览如实标出待更新的目标',
+    sync.rows.some((row) => row.state === '待更新'),
+    sync.rows.map((r) => `${r.key}/${r.env}:${r.state}`).join(' , ') || '（空）'
+  )
+  check(
+    '🔴 预览里不显示 Key 本身（只说哪里要改）',
+    sync.modalHasKey === false,
+    `含明文=${sync.modalHasKey}`
+  )
+  check(
+    '🔴 默认不勾选任何目标，写入按钮是禁用的',
+    sync.applyDisabled === true && sync.afterCheck === false,
+    `初始 disabled=${sync.applyDisabled}，勾选后 disabled=${sync.afterCheck}`
+  )
+  check('写入后弹窗关闭', sync.closed === true, `closed=${sync.closed}`)
+  check(
+    '🔴 一改多同步真的落到了磁盘文件上',
+    readFileSync(fixtureEnv, 'utf8').includes(ROTATED_UI_KEY),
+    readFileSync(fixtureEnv, 'utf8').split('\n').find((l) => l.startsWith('BRAND_NEW=')) ?? ''
+  )
+  check(
+    '同步只改那一行，其余内容不动',
+    ['# 共享配置', 'APP_NAME=envvault-fixture', 'ENABLE_CACHE=true'].every((line) =>
+      readFileSync(fixtureEnv, 'utf8').includes(line)
+    ),
+    '注释与其余变量都在'
+  )
+
   // --- 编辑与删除单个变量（阶段 2 的最后两项）------------------------------
+  // 上面那段把视图切到了「模型凭据」，下面的断言都在配置表上，先切回去。
+  await evaluate(`(async () => {
+    [...document.querySelectorAll('.nav button')].find(b => b.textContent.includes('配置总览')).click();
+    for (let i = 0; i < 30; i++) {
+      await new Promise(r => setTimeout(r, 150));
+      if (document.querySelector('.config-table tbody tr .key-name')) break;
+    }
+  })()`, true)
   //
   // 走的是真界面 → 真 IPC → 真磁盘：断言分两头看，表格里的值和 `.env`
   // 文件里的字节都要对上。只看表格的话，一个"改了记录没写盘"的实现也能骗过去。
@@ -517,9 +800,12 @@ async function runChecks() {
   )
 
   // 删除：确认框 → 表格里的行消失 → 文件里的那一行也消失。
-  // BRAND_NEW 的值在核心验收里被改成了一把真 Key，正好用来确认
-  // 确认框不会把被删变量的值铺出来。
-  const BRAND_NEW_SECRET = 'sk-ant-api03-verify-abcdefghijklmnop'
+  //
+  // 到这一步 BRAND_NEW 已经被上面那段提取成凭据并绑定了，所以这里顺带验到
+  // 「删掉一个归凭据管的变量」这条路：删除是允许的（变量真的要没了），
+  // 绑定会跟着一起解除。它的值是刚刚同步下去的那把 Key，
+  // 正好用来确认确认框不会把被删变量的值铺出来。
+  const BRAND_NEW_SECRET = ROTATED_UI_KEY
   const deletion = await evaluate(`(async () => {
     const wait = (ms) => new Promise(r => setTimeout(r, ms));
     const rowOf = (key) => [...document.querySelectorAll('.config-table tbody tr')]
@@ -678,7 +964,7 @@ async function runChecks() {
 
   // 「处理差异」列的是真实的待处理文件，并如实说明已丢失的那个无从对比 ——
   // 这里曾经是一句「将在阶段 2 接入」，阶段 2 做完之后它就成了假话。
-  const sync = await evaluate(`(async () => {
+  const pendingDiff = await evaluate(`(async () => {
     const wait = (ms) => new Promise(r => setTimeout(r, ms));
     [...document.querySelectorAll('.head-actions button')]
       .find(b => b.textContent.includes('处理差异'))?.click();
@@ -697,23 +983,27 @@ async function runChecks() {
 
   check(
     '「处理差异」列出真实的待处理文件',
-    sync.title === '待处理的文件差异' &&
-      sync.rows.length === 1 &&
-      sync.rows[0]?.path === '.env.staging',
-    `${sync.title}：${sync.rows.map((r) => r.path).join(', ') || '（空）'}`
+    pendingDiff.title === '待处理的文件差异' &&
+      pendingDiff.rows.length === 1 &&
+      pendingDiff.rows[0]?.path === '.env.staging',
+    `${pendingDiff.title}：${pendingDiff.rows.map((r) => r.path).join(', ') || '（空）'}`
   )
   check(
     '已从磁盘消失的文件不给「查看差异」按钮（点开只会报错）',
-    sync.rows[0]?.hasDiffButton === false && sync.rows[0]?.detail.includes('无从对比'),
-    sync.rows[0]?.detail ?? ''
+    pendingDiff.rows[0]?.hasDiffButton === false && pendingDiff.rows[0]?.detail.includes('无从对比'),
+    pendingDiff.rows[0]?.detail ?? ''
   )
   check(
     '不再声称这个功能"将在阶段 2 接入"',
-    sync.mentionsFuturePhase === false,
-    `含过期说明=${sync.mentionsFuturePhase}`
+    pendingDiff.mentionsFuturePhase === false,
+    `含过期说明=${pendingDiff.mentionsFuturePhase}`
   )
 
-  check('已截图供目视复核', existsSync(OVERVIEW_SHOT) && existsSync(ACTIVITY_SHOT), `${OVERVIEW_SHOT} / ${ACTIVITY_SHOT}`)
+  check(
+    '已截图供目视复核',
+    existsSync(OVERVIEW_SHOT) && existsSync(ACTIVITY_SHOT) && existsSync(CREDENTIALS_SHOT),
+    `${OVERVIEW_SHOT} / ${ACTIVITY_SHOT} / ${CREDENTIALS_SHOT}`
+  )
 
   // pageErrors 由 CDP 的 Log / Runtime 事件填充，不是页面里自报的变量 ——
   // 自报变量在没人写入时永远是空数组，那样的断言不可能失败，也就没有意义。

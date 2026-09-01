@@ -369,6 +369,58 @@ h1 { font-size: 35px; letter-spacing: 0; line-height: 1.05; margin: 8px 0 9px; }
   padding: 5px 7px;
 }
 .value-input:focus { outline: 1px solid var(--green); outline-offset: -1px; border-color: var(--green); }
+
+/* --- 模型凭据（阶段 3）------------------------------------------------- */
+/* 变量归某条凭据管时贴在「来源」下面，验收要求配置页仍能看到绑定状态。 */
+.binding-tag {
+  display: inline-flex;
+  align-items: center;
+  margin-top: 4px;
+  border-radius: 3px;
+  padding: 3px 6px;
+  background: var(--green-soft);
+  color: var(--green);
+  font: 10px var(--mono);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 地址变量仍然可以就地编辑，配色弱一档，避免和"锁住的 Key"看起来一样。 */
+.binding-tag[data-role='endpoint'] { background: var(--blue-soft); color: var(--blue); }
+
+.credential-panel { padding-bottom: 4px; }
+/*
+ * 六列，和配置表不是同一套宽度。`.config-table` 是 table-layout: fixed，
+ * 不给显式宽度的话浏览器按首行内容分配 —— 调用地址那一列会把「操作」挤出可视区，
+ * 而 .main-scroll 只挡住了文档级横向滚动条，列被切掉照样看不见。
+ */
+.credential-table th:nth-child(1) { width: 18%; }
+.credential-table th:nth-child(2) { width: 22%; }
+.credential-table th:nth-child(3) { width: 20%; }
+.credential-table th:nth-child(4) { width: 9%; }
+.credential-table th:nth-child(5) { width: 9%; }
+.credential-table th.col-actions { width: 22%; }
+.credential-table .value { display: block; }
+.credential-provider { margin-top: 3px; color: var(--muted); font: 10px var(--mono); }
+.credential-fingerprint { margin-top: 4px; color: #a3a69f; font: 10px var(--mono); }
+/* 窄窗口下让按钮换行，而不是把整张表撑出横向滚动。 */
+.credential-actions { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+.danger-text { color: #9c4a35; }
+.danger-text:hover { border-color: #9c4a35; }
+
+.binding-row > td { background: var(--canvas); padding: 12px 18px; }
+.binding-list { display: grid; gap: 8px; }
+.binding-item { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.binding-env, .binding-var {
+  margin-left: 8px;
+  border-radius: 3px;
+  padding: 2px 6px;
+  background: #f1f0ec;
+  color: var(--muted);
+  font: 10px var(--mono);
+}
+.binding-tail { display: flex; align-items: center; gap: 10px; }
 .type-tag, .source-tag { display: inline-flex; align-items: center; border-radius: 3px; padding: 4px 6px; font: 10px var(--mono); }
 /* 五个值类型各有一档，别漏 —— 漏掉的那档会退化成没有底色的裸标签。 */
 .type-tag.secret { background: var(--orange-soft); color: #a4562f; }
