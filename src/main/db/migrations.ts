@@ -194,6 +194,36 @@ const migration003: Migration = {
   }
 }
 
-export const MIGRATIONS: readonly Migration[] = [migration001, migration002, migration003]
+/**
+ * 004：清掉已经落库的 `original_format` 明文。
+ *
+ * 🔴 001 起 `original_format` 存的是**完整原始行**（`insertEntries` 写的是
+ * `node.raw`），而这一列是普通 TEXT，不加密。于是每一条
+ * `OPENAI_API_KEY=sk-proj-...` 的明文都躺在库里 —— 加密边界（HANDOFF §6）
+ * 一直漏在这一列上。
+ *
+ * 之所以没被发现：验收里那条「🔴 明文不落库」只翻了 `encrypted_value` 一列，
+ * 它够不着 `original_format`。断言绿的，漏洞在的。这正是 PHASE-2 §5 那条
+ * 教训的第二次出现，所以配套的断言改成了扫**整行**而不是某一列。
+ *
+ * 修法两步：扫描侧改成只产出「格式骨架」（`document.formatSkeleton`，
+ * 值换成占位符，引号/空白/注释都还在），这里把存量记录清空。
+ * 清空而不是就地改写，是因为这一列从来没有被任何代码读过 ——
+ * 写回走的是重新解析磁盘文件那条路，从不依赖它。留着旧值只是继续留着明文。
+ */
+const migration004: Migration = {
+  version: 4,
+  name: 'redact-original-format',
+  up(db) {
+    db.exec(`UPDATE config_entries SET original_format = NULL;`)
+  }
+}
+
+export const MIGRATIONS: readonly Migration[] = [
+  migration001,
+  migration002,
+  migration003,
+  migration004
+]
 
 export const LATEST_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0)

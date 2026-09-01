@@ -70,7 +70,7 @@ test('环境名与模板标记来自文件名', () => {
   }
 })
 
-test('条目带上分类结果与原始行文本', () => {
+test('条目带上分类结果与格式骨架', () => {
   const root = makeFixture()
   try {
     const local = scanProject(root).files.find((f) => f.fileName === '.env.local')
@@ -79,8 +79,10 @@ test('条目带上分类结果与原始行文本', () => {
     assert.equal(entry?.sensitivity, 'high')
     assert.equal(entry?.valueType, 'secret')
     assert.equal(entry?.lineNumber, 1)
-    // original_format 必须是完整的原始行，写回时靠它还原格式
-    assert.equal(entry?.originalFormat, 'OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz01')
+    // 🔴 original_format 落在一个不加密的 TEXT 列上，所以扫描给出的是
+    // 「把值换成占位符的那一行」而不是原始行 —— 否则明文直接落库。
+    assert.equal(entry?.originalFormat, 'OPENAI_API_KEY=<value>')
+    assert.equal(entry?.originalFormat.includes('sk-proj-'), false)
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

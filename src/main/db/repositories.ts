@@ -18,7 +18,14 @@ import * as vault from '../security/vault'
 import { VaultError } from '../security/vault'
 import { classify, compareEnvironments, shouldMask } from '../env/classify.ts'
 import { diffEnvFile, summarizeDiff, type CentralEntry } from '../env/diff.ts'
-import { applyEdits, parseEnv, serializeEnv } from '../env/document.ts'
+import {
+  applyEdits,
+  entriesOf,
+  formatSkeleton,
+  parseEnv,
+  removeEntries,
+  serializeEnv
+} from '../env/document.ts'
 import {
   PARSER_VERSION,
   currentFileHash,
@@ -33,6 +40,7 @@ import {
   type AdoptResult,
   type ConfigEntryView,
   type EntriesQuery,
+  type EntryMutationResult,
   type EnvFileView,
   type FileDiff,
   type ImportProjectRequest,
@@ -677,18 +685,12 @@ export function restoreFileFromCentral(
   const applied = applyEdits(parseEnv(original), edits)
   const content = serializeEnv(applied.doc)
 
-  let result
-  try {
-    result = writeEnvFileAtomic(file.absolute_path, content, {
-      backupRoot: backupRoot(),
-      expectedHash
-    })
-  } catch (error) {
-    if (error instanceof WriteConflictError) {
-      throw new RepositoryError('PATH_REJECTED', '文件在确认期间又被改动，已中止写入，请重新查看差异')
-    }
-    throw error
-  }
+  const result = writeGuarded(
+    file.absolute_path,
+    content,
+    expectedHash,
+    '文件在确认期间又被改动，已中止写入，请重新查看差异'
+  )
 
   getDatabase()
     .prepare('UPDATE env_files SET file_hash = ?, last_scanned_at = ? WHERE id = ?')
@@ -715,6 +717,267 @@ export function restoreFileFromCentral(
 
 function backupRoot(): string {
   return join(app.getPath('userData'), 'backups')
+}
+
+/** 原子写入 + 把并发冲突翻译成一句用户看得懂的话。 */
+function writeGuarded(
+  absolutePath: string,
+  content: string,
+  expectedHash: string,
+  conflictMessage: string
+): { backupPath: string; newHash: string } {
+  try {
+    return writeEnvFileAtomic(absolutePath, content, { backupRoot: backupRoot(), expectedHash })
+  } catch (error) {
+    if (error instanceof WriteConflictError) {
+      throw new RepositoryError('PATH_REJECTED', conflictMessage)
+    }
+    throw error
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 编辑与删除单个变量（计划 §9 阶段 2「编辑、删除」）
+// ---------------------------------------------------------------------------
+
+interface EditableEntry {
+  id: number
+  key: string
+  occurrence: number
+  encrypted_value: Uint8Array | null
+  env_file_id: number
+}
+
+interface EditContext {
+  entry: EditableEntry
+  file: ReturnType<typeof requireFile>
+  /** 磁盘当前哈希，已经过下面两道校验。 */
+  currentHash: string
+  /** 磁盘当前内容。和 currentHash 是同一次读取的结果。 */
+  content: string
+}
+
+/**
+ * 编辑与删除共用的前置检查。两道守卫拦的是**不同的**两件事，都不能省：
+ *
+ * 1. **`file_hash`（库里记的）vs 磁盘现值** —— 文件有还没处理的外部改动。
+ *    这时候就地写回等于替用户默默决定了 §6.4 的方向，把别人的修改覆盖掉。
+ *    正确做法是先去差异面板选一个方向，所以这里直接拒绝。
+ * 2. **`expectedHash`（调用方传的）vs 磁盘现值** —— 界面拿到数据之后、
+ *    用户点保存之前，文件又被改了。
+ *
+ * 🔴 两个被比较的值都来自**外部**（一个来自数据库、一个来自调用方），
+ * 不是在这里现算的。PHASE-2 §5 那个「守卫写成了摆设」的 bug，
+ * 根因就是拿现算的值去和现算的值比 —— 那种断言永远绿，因为它够不着判断。
+ */
+function requireEditableEntry(entryId: number, expectedHash: string): EditContext {
+  requireUnlocked()
+
+  const entry = getDatabase()
+    .prepare(
+      'SELECT id, key, occurrence, encrypted_value, env_file_id FROM config_entries WHERE id = ?'
+    )
+    .get<EditableEntry>(entryId)
+  if (!entry) throw new RepositoryError('NOT_FOUND', '配置项不存在')
+
+  const file = requireFile(entry.env_file_id)
+  const currentHash = currentFileHash(file.absolute_path)
+  if (currentHash === null) {
+    throw new RepositoryError('NOT_FOUND', '磁盘上找不到这个文件')
+  }
+  if (currentHash !== file.file_hash) {
+    throw new RepositoryError(
+      'PATH_REJECTED',
+      '这个文件在外部被改过，请先在「查看差异」里处理，再编辑变量'
+    )
+  }
+  if (currentHash !== expectedHash) {
+    throw new RepositoryError('PATH_REJECTED', '文件在你查看之后又被改动，已中止，请刷新后重试')
+  }
+
+  return { entry, file, currentHash, content: readFileSync(file.absolute_path, 'utf8') }
+}
+
+/**
+ * 写盘之后，把中心记录里跟着文件内容走的那几列重新对齐：
+ * 文件哈希、每一条的行号、以及格式骨架。
+ *
+ * 为什么是「重新解析写出去的内容」而不是就地做偏移算术：删一行会让它之后
+ * 所有变量的行号整体上移，改一个值也可能改变行数（多行值改成单行，或反过来）。
+ * 拿写出去的内容重新解析一遍是唯一不需要算偏移的办法，也就不会算错。
+ *
+ * ⚠️ 只 UPDATE，不重建记录 —— `config_entries.id` 必须保持稳定，
+ * 阶段 3 的凭据绑定要指向这些 id（同 `rescanProject` 的理由）。
+ */
+function syncFileState(fileId: number, newHash: string, content: string, now: number): void {
+  const db = getDatabase()
+  db.prepare('UPDATE env_files SET file_hash = ?, last_scanned_at = ? WHERE id = ?').run(
+    newHash,
+    now,
+    fileId
+  )
+
+  const statement = db.prepare(
+    `UPDATE config_entries SET source_line = ?, original_format = ?
+     WHERE env_file_id = ? AND key = ? AND occurrence = ?`
+  )
+  const seen = new Map<string, number>()
+  for (const node of entriesOf(parseEnv(content))) {
+    const occurrence = seen.get(node.key) ?? 0
+    seen.set(node.key, occurrence + 1)
+    // 🔴 存骨架不存原始行：original_format 这一列不加密。
+    statement.run(node.lineNumber, formatSkeleton(node), fileId, node.key, occurrence)
+  }
+}
+
+/**
+ * 改一个变量的值：更新中心记录，并立刻把新值原子写回磁盘文件。
+ *
+ * 「立刻写盘」而不是攒着等一次同步，是因为 drift 是靠哈希比对算出来的 ——
+ * 只改中心记录不会让文件变成 drifted，界面会显示「已同步」而实际上不一致。
+ * 要支持攒着就得引入一个 pending 标记和一整套新的状态语义；
+ * 一次动作一个确定结果要简单得多，而写回的机器本来就已经全部就位。
+ */
+export function updateEntryValue(
+  entryId: number,
+  newValue: string,
+  expectedHash: string
+): EntryMutationResult {
+  const { entry, file, currentHash, content: original } = requireEditableEntry(entryId, expectedHash)
+
+  const oldValue = entry.encrypted_value
+    ? vault.decryptValue(Buffer.from(entry.encrypted_value))
+    : ''
+  if (oldValue === newValue) {
+    // 值没变就什么都不做：不写盘、不备份，也不在操作记录里留一条「改了但没改」。
+    return {
+      entryId,
+      key: entry.key,
+      fileId: file.id,
+      written: false,
+      backupPath: null,
+      newHash: currentHash
+    }
+  }
+
+  const applied = applyEdits(parseEnv(original), [
+    { key: entry.key, value: newValue, occurrence: entry.occurrence }
+  ])
+  if (applied.missing.length > 0) {
+    // 哈希对得上却找不到这一行，说明中心记录和磁盘的对应关系已经断了。
+    // 与其猜一个位置写下去，不如让这次操作失败。
+    throw new RepositoryError('NOT_FOUND', '这个变量在磁盘文件里已经找不到了，请先重新扫描')
+  }
+
+  // `changed` 为空但 key 找得到，说明磁盘上那一行本来就是新值 ——
+  // 中心记录和磁盘在这个 key 上早就分叉了（上一次「以记录为准」只勾了部分变量
+  // 就会留下这种状态，哈希仍然是对的）。这时文件不用动，但记录要跟着对齐。
+  const touchesDisk = applied.changed.length > 0
+  const content = touchesDisk ? serializeEnv(applied.doc) : original
+  const result = touchesDisk
+    ? writeGuarded(
+        file.absolute_path,
+        content,
+        expectedHash,
+        '文件在保存期间又被改动，已中止写入，请刷新后重试'
+      )
+    : null
+
+  // 重新分类：值变了，类型和敏感度可能跟着变（把普通值改成一把真 Key，
+  // 下一秒就该被掩码起来）。key 没变，所以命名规则那一路的判断不受影响。
+  const { valueType, sensitivity } = classify(entry.key, newValue)
+  const now = Date.now()
+  const db = getDatabase()
+  db.transaction(() => {
+    db.prepare(
+      `UPDATE config_entries
+       SET encrypted_value = ?, value_type = ?, sensitivity = ?, updated_at = ?
+       WHERE id = ?`
+    ).run(vault.encryptValue(newValue), valueType, sensitivity, now, entryId)
+    syncFileState(file.id, result?.newHash ?? currentHash, content, now)
+  })
+
+  const relativePath = toRelative(file.project_path, file.absolute_path)
+  logActivity({
+    action: 'entry.update',
+    projectId: file.project_id,
+    environment: file.environment,
+    targetKind: 'entry',
+    // 只记 key 名，新旧值一个都不记（§5.5）。
+    targetRef: entry.key,
+    detail: touchesDisk
+      ? `值已更新并写回 ${relativePath}`
+      : `值已更新；${relativePath} 里本来就是这个值，未改动文件`
+  })
+
+  return {
+    entryId,
+    key: entry.key,
+    fileId: file.id,
+    written: touchesDisk,
+    backupPath: result?.backupPath ?? null,
+    newHash: result?.newHash ?? currentHash
+  }
+}
+
+/**
+ * 删一个变量：清掉中心记录，并把磁盘文件里的那一行一起删掉。
+ *
+ * 之所以两边都删：只删记录的话，下一次重扫或「以磁盘为准」会把它原样收回来 ——
+ * 删除看起来自己撤销了自己，这是最糟糕的一种结果。
+ *
+ * 磁盘上本来就没有这一行时（中心记录里的陈旧条目），只清记录，文件一个字节不碰。
+ */
+export function deleteEntry(entryId: number, expectedHash: string): EntryMutationResult {
+  const { entry, file, currentHash, content: original } = requireEditableEntry(entryId, expectedHash)
+
+  const removal = removeEntries(parseEnv(original), [
+    { key: entry.key, occurrence: entry.occurrence }
+  ])
+  const touchesDisk = removal.removed.length > 0
+  const content = touchesDisk ? serializeEnv(removal.doc) : original
+  const written = touchesDisk
+    ? writeGuarded(
+        file.absolute_path,
+        content,
+        expectedHash,
+        '文件在删除期间又被改动，已中止写入，请刷新后重试'
+      )
+    : null
+
+  const now = Date.now()
+  const db = getDatabase()
+  db.transaction(() => {
+    db.prepare('DELETE FROM config_entries WHERE id = ?').run(entryId)
+    // 🔴 删掉重复 key 里的一条，会让它后面几条在文件里的序号整体前移。
+    // 中心记录不跟着改，occurrence 就和磁盘对不上了 —— 下次编辑那个 key
+    // 会按错误的序号去改**另一行**，而且不会报任何错。
+    db.prepare(
+      `UPDATE config_entries SET occurrence = occurrence - 1
+       WHERE env_file_id = ? AND key = ? AND occurrence > ?`
+    ).run(entry.env_file_id, entry.key, entry.occurrence)
+    syncFileState(file.id, written?.newHash ?? currentHash, content, now)
+  })
+
+  logActivity({
+    action: 'entry.delete',
+    projectId: file.project_id,
+    environment: file.environment,
+    targetKind: 'entry',
+    targetRef: entry.key,
+    detail: touchesDisk
+      ? `已从 ${toRelative(file.project_path, file.absolute_path)} 删除该变量`
+      : '磁盘文件里本来就没有这一行，只清除了中心记录'
+  })
+
+  return {
+    entryId,
+    key: entry.key,
+    fileId: file.id,
+    written: touchesDisk,
+    backupPath: written?.backupPath ?? null,
+    newHash: written?.newHash ?? currentHash
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -247,7 +247,7 @@ button { cursor: pointer; }
 .crumb { color: var(--muted); font-size: 12px; }
 .crumb strong { color: var(--ink); font-weight: 600; }
 .top-actions { display: flex; align-items: center; gap: 9px; }
-.icon-btn, .outline-btn, .primary-btn {
+.icon-btn, .outline-btn, .primary-btn, .danger-btn {
   border: 1px solid var(--line-strong);
   background: var(--surface);
   color: var(--ink);
@@ -257,10 +257,14 @@ button { cursor: pointer; }
 .icon-btn { width: 33px; height: 33px; display: grid; place-items: center; font: 16px var(--mono); }
 .outline-btn { padding: 8px 12px; font-size: 12px; }
 .primary-btn { border-color: var(--ink); background: var(--ink); color: white; padding: 9px 14px; font-size: 12px; }
+/* 破坏性确认按钮。和 primary 长得不一样，是为了不让"下意识点右边那个"变成误删。 */
+.danger-btn { border-color: #9c4a35; background: #9c4a35; color: white; padding: 9px 14px; font-size: 12px; }
 .icon-btn:hover, .outline-btn:hover { border-color: var(--ink); background: white; }
 .primary-btn:hover { background: #3b403c; }
-.primary-btn:disabled, .outline-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.danger-btn:hover { background: #853e2c; }
+.primary-btn:disabled, .outline-btn:disabled, .danger-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .primary-btn:disabled:hover { background: var(--ink); }
+.danger-btn:disabled:hover { background: #9c4a35; }
 
 .page-head { display: flex; justify-content: space-between; align-items: end; gap: 20px; padding: 31px 0 25px; }
 .eyebrow { color: var(--green); font: 10px var(--mono); letter-spacing: 0.13em; text-transform: uppercase; }
@@ -347,6 +351,24 @@ h1 { font-size: 35px; letter-spacing: 0; line-height: 1.05; margin: 8px 0 9px; }
 .value.masked { letter-spacing: 0.12em; color: #888d87; }
 .mini-btn { flex: 0 0 auto; border: 0; background: transparent; color: #9a9e98; font: 13px var(--mono); padding: 2px; }
 .mini-btn:hover { color: var(--ink); }
+.mini-btn.danger:hover { color: #9c4a35; }
+/* 文件有外部改动时编辑/删除是禁用的，得看得出来点不动，而不是点了没反应。 */
+.mini-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+.mini-btn:disabled:hover { color: #9a9e98; }
+
+/* 行内编辑：占满值这一列，两个按钮跟在后面，行高不跳。 */
+.value-edit { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.value-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--surface-strong);
+  color: var(--ink);
+  font: 11px var(--mono);
+  padding: 5px 7px;
+}
+.value-input:focus { outline: 1px solid var(--green); outline-offset: -1px; border-color: var(--green); }
 .type-tag, .source-tag { display: inline-flex; align-items: center; border-radius: 3px; padding: 4px 6px; font: 10px var(--mono); }
 /* 五个值类型各有一档，别漏 —— 漏掉的那档会退化成没有底色的裸标签。 */
 .type-tag.secret { background: var(--orange-soft); color: #a4562f; }
@@ -544,7 +566,7 @@ h1 { font-size: 35px; letter-spacing: 0; line-height: 1.05; margin: 8px 0 9px; }
 .check-row input { accent-color: var(--green); margin-top: 2px; }
 .modal-divider { height: 1px; background: var(--line); margin: 19px 0; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 22px; }
-.modal-actions .outline-btn, .modal-actions .primary-btn { min-width: 76px; }
+.modal-actions .outline-btn, .modal-actions .primary-btn, .modal-actions .danger-btn { min-width: 76px; }
 .diff-list { border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
 .diff-row { display: grid; grid-template-columns: 22px 1fr auto; align-items: center; gap: 9px; padding: 11px 12px; border-bottom: 1px solid #eeeae3; }
 .diff-row:last-child { border-bottom: 0; }

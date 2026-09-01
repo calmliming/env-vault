@@ -60,6 +60,10 @@ export const bridge = {
   rescanProject: (projectId: number) => call(() => window.envvault.rescanProject(projectId)),
   listEntries: (query: EntriesQuery) => call(() => window.envvault.listEntries(query)),
   revealEntry: (entryId: number) => call(() => window.envvault.revealEntry(entryId)),
+  updateEntry: (entryId: number, value: string, expectedHash: string) =>
+    call(() => window.envvault.updateEntry(entryId, value, expectedHash)),
+  deleteEntry: (entryId: number, expectedHash: string) =>
+    call(() => window.envvault.deleteEntry(entryId, expectedHash)),
   listFiles: (projectId: number) => call(() => window.envvault.listFiles(projectId)),
   diffFile: (fileId: number) => call(() => window.envvault.diffFile(fileId)),
   adoptDiskFile: (fileId: number) => call(() => window.envvault.adoptDiskFile(fileId)),

@@ -6,6 +6,7 @@ import { useAppHealth } from './hooks/useAppHealth'
 import { useWorkspace } from './hooks/useWorkspace'
 import { bridge } from './lib/api'
 import { CredentialModal } from './modals/CredentialModal'
+import { DeleteEntryModal } from './modals/DeleteEntryModal'
 import { DiffModal } from './modals/DiffModal'
 import { NoticeModal } from './modals/NoticeModal'
 import { ProjectModal } from './modals/ProjectModal'
@@ -17,7 +18,7 @@ import { OverviewView } from './views/OverviewView'
 import { SettingsView } from './views/SettingsView'
 import { ActivityView, CredentialsView, SecurityView } from './views/SimpleViews'
 import type { ViewId } from './views/registry'
-import type { EnvFileView } from '@shared/ipc'
+import type { ConfigEntryView, EnvFileView } from '@shared/ipc'
 
 export function App(): ReactNode {
   return (
@@ -120,15 +121,40 @@ function Workspace(): ReactNode {
     [openModal, showToast, workspace]
   )
 
+  const openDeleteEntry = useCallback(
+    (entry: ConfigEntryView, expectedHash: string) => {
+      openModal({
+        kicker: '删除变量',
+        title: `删除 ${entry.key}`,
+        render: ({ close }) => (
+          <DeleteEntryModal
+            close={close}
+            showToast={showToast}
+            entry={entry}
+            expectedHash={expectedHash}
+            onDeleted={() => {
+              // 条目没了、文件内容变了、项目的变量计数也变了，三样都要重拉。
+              void workspace.reloadCurrent()
+              void workspace.reloadProjects(workspace.selectedProject?.id)
+            }}
+          />
+        )
+      })
+    },
+    [openModal, showToast, workspace]
+  )
+
   const openSync = useCallback(() => {
     openModal({
-      kicker: '同步确认',
-      title: '写回本地文件',
+      kicker: '外部修改',
+      title: '待处理的文件差异',
       render: ({ close }) => (
-        <SyncModal close={close} showToast={showToast} files={workspace.files} />
+        // 点进某个文件就换成差异面板：写回方向必须逐文件选，
+        // openModal 是单例状态，直接替换掉当前描述符即可。
+        <SyncModal close={close} files={workspace.files} onOpenDiff={openDiff} />
       )
     })
-  }, [openModal, showToast, workspace.files])
+  }, [openModal, workspace.files, openDiff])
 
   const openSearch = useCallback(() => {
     openModal({
@@ -199,6 +225,7 @@ function Workspace(): ReactNode {
               onAddProject={openProject}
               onOpenSync={openSync}
               onOpenDiff={openDiff}
+              onDeleteEntry={openDeleteEntry}
               onVaultAction={() => void runVaultAction()}
               showToast={showToast}
             />

@@ -20,7 +20,7 @@ import { getSchemaVersion, migrate } from '../src/main/db/migrator'
 import * as repo from '../src/main/db/repositories'
 import * as vault from '../src/main/security/vault'
 import { VaultError } from '../src/main/security/vault'
-import { applyEdits, parseEnv, serializeEnv } from '../src/main/env/document.ts'
+import { applyEdits, entriesOf, parseEnv, serializeEnv } from '../src/main/env/document.ts'
 import { MASKED_PLACEHOLDER } from '../src/shared/ipc'
 
 interface Check {
@@ -126,8 +126,12 @@ function buildFixture(): void {
       "DB_PASSWORD='pa#ss word'",
       'NEXTAUTH_SECRET="line1\\nline2"',
       'LOG_LEVEL=debug   # 只在本机开 debug',
+      // 三条而不是两条：删掉中间/开头的一条之后，剩下的序号必须整体前移。
+      // 只有两条时，applyEdits 对越界序号的"夹到边界"会碰巧命中正确的那一行，
+      // 于是"忘了重新编号"这个 bug 在两条的样本上是看不见的。
       'DUP=first',
-      'DUP=second'
+      'DUP=second',
+      'DUP=third'
     ].join('\r\n') + '\r\n'
   )
 
@@ -153,12 +157,12 @@ function run(): void {
   check('数据库文件已创建', existsSync(info.filePath) && statSync(info.filePath).size > 0, info.filePath)
   check(
     '迁移已推进到最新版本',
-    info.schemaVersion === info.latestVersion && info.latestVersion >= 3,
+    info.schemaVersion === info.latestVersion && info.latestVersion >= 4,
     `user_version=${info.schemaVersion} / latest=${info.latestVersion}`
   )
   check(
-    '三条迁移都已执行',
-    info.appliedMigrations.length === 3,
+    '四条迁移都已执行',
+    info.appliedMigrations.length === 4,
     info.appliedMigrations.map((m) => `${m.version}:${m.name}`).join(', ') || '（无）'
   )
 
@@ -276,11 +280,11 @@ function run(): void {
   const entries = repo.listEntries({ projectId: project.id })
   const byKey = new Map(entries.map((e) => [e.key, e]))
 
-  // .env 4 条 + .env.local 6 条（含重复的 DUP）+ .env.production 1 条
-  check('条目总数正确（含重复 key）', entries.length === 11, `共 ${entries.length} 条`)
+  // .env 4 条 + .env.local 7 条（含重复的 DUP 三条）+ .env.production 1 条
+  check('条目总数正确（含重复 key）', entries.length === 12, `共 ${entries.length} 条`)
   check(
-    '重复 key 两条都在',
-    entries.filter((e) => e.key === 'DUP').length === 2,
+    '重复 key 三条都在',
+    entries.filter((e) => e.key === 'DUP').length === 3,
     entries.filter((e) => e.key === 'DUP').map((e) => e.displayValue).join(' / ')
   )
 
@@ -342,7 +346,7 @@ function run(): void {
   const localOnly = repo.listEntries({ projectId: project.id, environment: 'local' })
   check(
     '按环境筛选生效',
-    localOnly.length === 6 && localOnly.every((e) => e.environment === 'local'),
+    localOnly.length === 7 && localOnly.every((e) => e.environment === 'local'),
     `local 环境 ${localOnly.length} 条`
   )
 
@@ -582,6 +586,318 @@ function run(): void {
     '文件里不存在的 key 进 skipped，不被追加',
     partial.skipped.includes('SNEAKY') && !readFileSync(envPath, 'utf8').includes('SNEAKY'),
     `skipped=${partial.skipped.join(', ')}`
+  )
+
+  // =========================================================================
+  // 阶段 2（续）：编辑与删除单个变量（计划 §9 阶段 2 的最后两项）
+  // =========================================================================
+
+  /** 磁盘当前哈希 —— 界面手里那个 expectedHash 就是从这条路来的。 */
+  const diskHashOf = (fileName: string): string =>
+    repo.listFiles(project.id).find((f) => f.fileName === fileName)!.currentHash!
+  const entryOf = (key: string) =>
+    repo.listEntries({ projectId: project.id }).find((e) => e.key === key)!
+
+  // --- 改一个值：中心记录与磁盘一起变 ---------------------------------------
+  const envBeforeEdit = readFileSync(envPath, 'utf8')
+  const portId = entryOf('PORT').id
+  const portEdit = repo.updateEntryValue(portId, '4321', diskHashOf('.env'))
+
+  check('编辑更新了中心记录', repo.revealEntry(portId).value === '4321', 'PORT: 8080 → 4321')
+  check(
+    '编辑立刻写盘，不需要再点一次同步',
+    portEdit.written && readFileSync(envPath, 'utf8').includes('PORT=4321'),
+    `written=${portEdit.written}`
+  )
+
+  const editedLines = readFileSync(envPath, 'utf8').split('\n')
+  const beforeEditLines = envBeforeEdit.split('\n')
+  const editTouched = beforeEditLines
+    .map((line, i) => (line === editedLines[i] ? null : i))
+    .filter((i): i is number => i !== null)
+  check(
+    '🔴 编辑只改那一行，注释与空行原样保留',
+    editTouched.length === 1 && beforeEditLines[editTouched[0]!] === 'PORT=8080',
+    `变化行号: ${editTouched.map((i) => i + 1).join(', ') || '无'}`
+  )
+  check(
+    '编辑前备份了原文件，备份内容是改动前的版本',
+    portEdit.backupPath !== null && readFileSync(portEdit.backupPath, 'utf8') === envBeforeEdit,
+    portEdit.backupPath ?? '（没有备份）'
+  )
+  check(
+    '编辑的备份不落在用户项目目录里',
+    portEdit.backupPath !== null && !portEdit.backupPath.startsWith(fixtureRoot),
+    '在 userData/backups 下'
+  )
+
+  const noop = repo.updateEntryValue(portId, '4321', diskHashOf('.env'))
+  check(
+    '值没变时不写盘、不备份、不留一条空操作记录',
+    noop.written === false && noop.backupPath === null,
+    `written=${noop.written} backup=${noop.backupPath}`
+  )
+
+  // 值变了，类型和敏感度要跟着重新判 —— 把普通值改成一把真 Key，
+  // 下一次列表就该把它掩码起来，而不是等到下次重扫。
+  const NEW_SECRET = 'sk-ant-api03-verify-abcdefghijklmnop'
+  repo.updateEntryValue(entryOf('BRAND_NEW').id, NEW_SECRET, diskHashOf('.env'))
+  const reclassified = entryOf('BRAND_NEW')
+  check(
+    '编辑后重新分类：普通值改成真 Key 会立刻升级为敏感并掩码',
+    reclassified.sensitivity === 'high' && reclassified.displayValue === MASKED_PLACEHOLDER,
+    `sensitivity=${reclassified.sensitivity} display=${reclassified.displayValue}`
+  )
+
+  // --- 🔴 明文不落库：这次扫整行，不只扫 encrypted_value ---------------------
+  //
+  // 上面那条同名断言只翻了 encrypted_value 一列，够不着 original_format ——
+  // 而 original_format 是不加密的 TEXT 列，一直存着**完整的原始行**，
+  // 于是每一把 Key 的明文都躺在库里。断言绿的，漏洞在的。
+  // 一条够不着目标的断言和一条真通过了的断言，在报告上长得一模一样（§5 的教训）。
+  const NEEDLES = ['sk-proj-', 'sk-ant-', 'pa#ss', 'user:secret', 'line1\\nline2']
+  const leakedColumns = db
+    .prepare(
+      `SELECT c.* FROM config_entries c
+       JOIN env_files f ON f.id = c.env_file_id
+       WHERE f.project_id = ?`
+    )
+    .all<Record<string, unknown>>(project.id)
+    .flatMap((row) =>
+      Object.entries(row)
+        .filter(([, v]) => typeof v === 'string' && NEEDLES.some((n) => v.includes(n)))
+        .map(([column]) => column)
+    )
+  check(
+    '🔴 config_entries 的每一列都没有明文（不只是 encrypted_value）',
+    leakedColumns.length === 0,
+    leakedColumns.length === 0
+      ? '逐列扫描通过'
+      : `泄漏的列: ${[...new Set(leakedColumns)].join(', ')}`
+  )
+
+  // 再从字节层面兜一次底：WAL 模式下最近的写可能还在 -wal 里。
+  const dbBytes = [info.filePath, `${info.filePath}-wal`]
+    .filter((path) => existsSync(path))
+    .map((path) => readFileSync(path).toString('latin1'))
+    .join('')
+  const leakedNeedles = NEEDLES.filter((needle) => dbBytes.includes(needle))
+  check(
+    '🔴 数据库文件的字节里也搜不到明文片段',
+    leakedNeedles.length === 0,
+    leakedNeedles.length === 0
+      ? `扫了 ${Math.round(dbBytes.length / 1024)} KiB（含 -wal）`
+      : `命中: ${leakedNeedles.join(', ')}`
+  )
+
+  // --- 守卫一：文件有未处理的外部改动时，不许就地编辑 ------------------------
+  // 这时候写下去等于替用户默默选了 §6.4 的方向，把别人的修改盖掉。
+  const hashBeforeInterloper = diskHashOf('.env')
+  writeFileSync(envPath, readFileSync(envPath, 'utf8') + 'INTERLOPER=1\n')
+
+  let driftRefused = ''
+  try {
+    // 注意：这里传的是**当前**磁盘哈希，所以并发校验那一关是过得去的。
+    // 能拦下来只可能是「文件与记录不一致」这道守卫 —— 两道守卫各自可达。
+    repo.updateEntryValue(portId, '9999', diskHashOf('.env'))
+  } catch (error) {
+    driftRefused = error instanceof repo.RepositoryError ? error.code : String(error)
+  }
+  check(
+    '🔴 文件有未处理的外部改动时拒绝就地编辑（先走差异流程）',
+    driftRefused === 'PATH_REJECTED',
+    `code=${driftRefused}`
+  )
+  check(
+    '被拒绝后别人的修改和中心记录都没被动过',
+    readFileSync(envPath, 'utf8').includes('INTERLOPER=1') &&
+      repo.revealEntry(portId).value === '4321',
+    '文件与记录都原样'
+  )
+
+  // --- 守卫二：调用方手里的哈希过期了 ---------------------------------------
+  // 先把外部改动收进来，让「文件与记录不一致」这道守卫过关，
+  // 只剩下"你做决定时看到的内容已经不是现在这份了"这一种可能。
+  repo.adoptDiskFile(repo.listFiles(project.id).find((f) => f.fileName === '.env')!.id)
+  const portIdAfterAdopt = entryOf('PORT').id
+
+  let staleRefused = ''
+  try {
+    repo.updateEntryValue(portIdAfterAdopt, '9999', hashBeforeInterloper)
+  } catch (error) {
+    staleRefused = error instanceof repo.RepositoryError ? error.code : String(error)
+  }
+  check(
+    '🔴 调用方基于旧版本做的决定被中止（expectedHash 过期）',
+    staleRefused === 'PATH_REJECTED',
+    `code=${staleRefused}`
+  )
+  check(
+    '中止后值没有被改成 9999',
+    repo.revealEntry(portIdAfterAdopt).value === '4321',
+    `PORT=${repo.revealEntry(portIdAfterAdopt).value}`
+  )
+
+  // --- 删除：记录和文件里那一行一起消失 -------------------------------------
+  const envBeforeDelete = readFileSync(envPath, 'utf8')
+  const interloperId = entryOf('INTERLOPER').id
+  const deleted = repo.deleteEntry(interloperId, diskHashOf('.env'))
+
+  check(
+    '删除同时清掉了中心记录',
+    !repo.listEntries({ projectId: project.id }).some((e) => e.key === 'INTERLOPER'),
+    '记录里已无 INTERLOPER'
+  )
+  check(
+    '删除把文件里的那一行也删掉了',
+    deleted.written && !readFileSync(envPath, 'utf8').includes('INTERLOPER'),
+    `written=${deleted.written}`
+  )
+  check(
+    '🔴 删除只少那一行，其余逐行不变',
+    JSON.stringify(readFileSync(envPath, 'utf8').split('\n')) ===
+      JSON.stringify(envBeforeDelete.split('\n').filter((line) => line !== 'INTERLOPER=1')),
+    '注释、空行与其余变量都在'
+  )
+  check(
+    '删除前也备份了原文件',
+    deleted.backupPath !== null && readFileSync(deleted.backupPath, 'utf8') === envBeforeDelete,
+    deleted.backupPath ?? '（没有备份）'
+  )
+
+  // --- 删除重复 key 里的一条：剩下的序号必须重新对齐磁盘 --------------------
+  const localBeforeDupDelete = readFileSync(localPath, 'utf8')
+  const dupBefore = repo
+    .listEntries({ projectId: project.id })
+    .filter((e) => e.key === 'DUP')
+  const dupDeleted = repo.deleteEntry(dupBefore[0]!.id, diskHashOf('.env.local'))
+  const localAfterDupDelete = readFileSync(localPath, 'utf8')
+
+  check(
+    '删掉重复 key 的第一条，文件里只少那一行',
+    dupDeleted.written &&
+      JSON.stringify(localAfterDupDelete.split('\r\n')) ===
+        JSON.stringify(localBeforeDupDelete.split('\r\n').filter((line) => line !== 'DUP=first')),
+    `剩下 ${localAfterDupDelete.split('\r\n').filter((l) => l.startsWith('DUP=')).length} 条 DUP`
+  )
+
+  const dupRows = db
+    .prepare(
+      `SELECT c.occurrence FROM config_entries c
+       JOIN env_files f ON f.id = c.env_file_id
+       WHERE f.absolute_path = ? AND c.key = 'DUP'
+       ORDER BY c.occurrence ASC`
+    )
+    .all<{ occurrence: number }>(localPath)
+  check(
+    '🔴 剩下两条的 occurrence 重新编号为 0、1',
+    JSON.stringify(dupRows.map((r) => r.occurrence)) === JSON.stringify([0, 1]),
+    `occurrence=${dupRows.map((r) => r.occurrence).join(', ')}`
+  )
+
+  // 上面那条是白盒断言，这条证明它确实有用：序号没重编的话，
+  // 这次编辑会落到 DUP=third 那一行上，而且不会报任何错。
+  const survivingDup = repo.listEntries({ projectId: project.id }).filter((e) => e.key === 'DUP')
+  repo.updateEntryValue(survivingDup[0]!.id, 'survivor', diskHashOf('.env.local'))
+  const dupLines = readFileSync(localPath, 'utf8')
+    .split('\r\n')
+    .filter((line) => line.startsWith('DUP='))
+  check(
+    '🔴 序号重编之后，编辑第一条改的是正确的那一行',
+    JSON.stringify(dupLines) === JSON.stringify(['DUP=survivor', 'DUP=third']),
+    dupLines.join(' / ')
+  )
+
+  // --- 行号与磁盘对齐 -------------------------------------------------------
+  const localDoc = parseEnv(readFileSync(localPath, 'utf8'))
+  const diskLines = new Map(
+    entriesOf(localDoc).map((node, index) => [`${node.key}#${index}`, node.lineNumber])
+  )
+  const storedLines = db
+    .prepare(
+      `SELECT c.key, c.source_line FROM config_entries c
+       JOIN env_files f ON f.id = c.env_file_id
+       WHERE f.absolute_path = ?
+       ORDER BY c.source_line ASC, c.id ASC`
+    )
+    .all<{ key: string; source_line: number }>(localPath)
+  const lineMismatch = storedLines.filter(
+    (row, index) => diskLines.get(`${row.key}#${index}`) !== row.source_line
+  )
+  check(
+    '删除之后中心记录的行号跟着磁盘整体上移',
+    lineMismatch.length === 0 && storedLines.length === entriesOf(localDoc).length,
+    lineMismatch.length === 0
+      ? `${storedLines.length} 条行号与磁盘一致`
+      : `对不上: ${lineMismatch.map((r) => r.key).join(', ')}`
+  )
+
+  // --- 中心记录里的陈旧条目：磁盘上本来就没有这一行 -------------------------
+  // 删它只清记录，不该去动文件（连备份都不该产生）。
+  const productionFile = repo.listFiles(project.id).find((f) => f.fileName === '.env.production')!
+  const productionPath = join(fixtureRoot, 'apps', 'web', '.env.production')
+  db.prepare(
+    `INSERT INTO config_entries (env_file_id, key, occurrence, encrypted_value, value_type,
+       sensitivity, source_line, original_format, updated_at)
+     VALUES (?, 'GHOST_ENTRY', 0, ?, 'text', 'normal', 99, NULL, ?)`
+  ).run(productionFile.id, vault.encryptValue('stale'), Date.now())
+
+  const productionBefore = readFileSync(productionPath, 'utf8')
+  const ghost = repo.deleteEntry(entryOf('GHOST_ENTRY').id, diskHashOf('.env.production'))
+  check(
+    '磁盘上没有的陈旧条目：只清记录，文件一个字节不碰',
+    ghost.written === false &&
+      ghost.backupPath === null &&
+      readFileSync(productionPath, 'utf8') === productionBefore,
+    `written=${ghost.written} backup=${ghost.backupPath}`
+  )
+
+  // --- 中心记录与磁盘在某个 key 上早就分叉了 --------------------------------
+  //
+  // 「以记录为准」只勾了部分变量时会留下这种状态：文件哈希是对的，
+  // 但另一个 key 的中心值和磁盘不一样。这时把中心值改成磁盘上已有的那个值，
+  // 应该只对齐记录、不写文件 —— 而不是报「变量找不到」。
+  const forkedFile = repo.listFiles(project.id).find((f) => f.fileName === '.env.local')!
+  db.prepare(
+    `UPDATE config_entries SET encrypted_value = ?
+     WHERE env_file_id = ? AND key = 'LOG_LEVEL'`
+  ).run(vault.encryptValue('分叉了'), forkedFile.id)
+
+  const localBeforeAlign = readFileSync(localPath, 'utf8')
+  // 磁盘上 LOG_LEVEL 是 info（外部改动后被重扫收进来的）。
+  const aligned = repo.updateEntryValue(entryOf('LOG_LEVEL').id, 'info', diskHashOf('.env.local'))
+  check(
+    '中心值追上磁盘上已有的值：只对齐记录，不写文件',
+    aligned.written === false &&
+      aligned.backupPath === null &&
+      readFileSync(localPath, 'utf8') === localBeforeAlign &&
+      repo.revealEntry(entryOf('LOG_LEVEL').id).value === 'info',
+    `written=${aligned.written} 文件未变=${readFileSync(localPath, 'utf8') === localBeforeAlign}`
+  )
+
+  // --- 操作记录：有痕迹，但没有值 -------------------------------------------
+  const mutationLog = repo
+    .listActivity(200)
+    .filter((r) => r.action === 'entry.update' || r.action === 'entry.delete')
+  check(
+    '编辑与删除都留了操作记录',
+    mutationLog.some((r) => r.action === 'entry.update') &&
+      mutationLog.some((r) => r.action === 'entry.delete'),
+    `${mutationLog.length} 条`
+  )
+  check(
+    '🔴 编辑/删除的记录里只有 key 名，没有新旧值',
+    !NEEDLES.some((needle) => JSON.stringify(mutationLog).includes(needle)) &&
+      !JSON.stringify(mutationLog).includes('4321'),
+    '只记 key 名与文件路径'
+  )
+
+  // 留给界面验收的必须是一份干净数据：三个文件哈希对齐、.env.staging 已丢失。
+  const leftover = repo.listFiles(project.id).filter((f) => f.drifted)
+  check(
+    '这一段跑完后只剩「磁盘上已消失」那一个差异',
+    leftover.length === 1 && leftover[0]?.fileName === '.env.staging',
+    leftover.map((f) => `${f.fileName}:${f.currentHash === null ? '已丢失' : '有改动'}`).join(', ')
   )
 
   // --- Vault 锁定后读不到值 -------------------------------------------------

@@ -27,6 +27,8 @@ export const CHANNELS = {
   projectsRescan: 'projects:rescan',
   entriesList: 'entries:list',
   entriesReveal: 'entries:reveal',
+  entriesUpdate: 'entries:update',
+  entriesDelete: 'entries:delete',
   filesList: 'files:list',
   filesDiff: 'files:diff',
   filesAdopt: 'files:adopt',
@@ -214,6 +216,28 @@ export interface RevealResult {
   value: string
 }
 
+/**
+ * 编辑或删除单个变量的结果。
+ *
+ * 这两个动作都是「改中心记录 + 立刻原子写回磁盘」的一次性操作：
+ * 中途任何一步失败都不落库，所以不存在「记录改了文件没改」的中间态。
+ */
+export interface EntryMutationResult {
+  /** 受影响的条目 id。删除之后这个 id 已经不存在了。 */
+  entryId: number
+  key: string
+  fileId: number
+  /**
+   * 是否真的写了磁盘。两种情况为 false：新值和旧值相同，
+   * 以及要删的 key 本来就不在磁盘文件里（只清掉了中心记录）。
+   */
+  written: boolean
+  /** 写盘前的备份路径；没写盘时为 null。 */
+  backupPath: string | null
+  /** 文件当前哈希，界面拿去更新手里的 expectedHash。 */
+  newHash: string
+}
+
 export interface ActivityRecord {
   id: number
   action: string
@@ -318,6 +342,14 @@ export interface IpcContract {
   [CHANNELS.projectsRescan]: { request: { projectId: number }; response: RescanResult }
   [CHANNELS.entriesList]: { request: EntriesQuery; response: ConfigEntryView[] }
   [CHANNELS.entriesReveal]: { request: { entryId: number }; response: RevealResult }
+  [CHANNELS.entriesUpdate]: {
+    request: { entryId: number; value: string; expectedHash: string }
+    response: EntryMutationResult
+  }
+  [CHANNELS.entriesDelete]: {
+    request: { entryId: number; expectedHash: string }
+    response: EntryMutationResult
+  }
   [CHANNELS.filesList]: { request: { projectId: number }; response: EnvFileView[] }
   [CHANNELS.filesDiff]: { request: { fileId: number }; response: FileDiff }
   [CHANNELS.filesAdopt]: { request: { fileId: number }; response: AdoptResult }
@@ -376,6 +408,19 @@ export interface EnvVaultApi {
   rescanProject(projectId: number): Promise<IpcResult<RescanResult>>
   listEntries(query: EntriesQuery): Promise<IpcResult<ConfigEntryView[]>>
   revealEntry(entryId: number): Promise<IpcResult<RevealResult>>
+  /**
+   * 改一个变量的值：更新中心记录并立刻原子写回磁盘。
+   *
+   * `expectedHash` 是界面看到这份数据时文件的磁盘哈希 ——
+   * 语义同 `restoreFile`：「我这个决定是基于哪个版本做的」。对不上就中止。
+   */
+  updateEntry(
+    entryId: number,
+    value: string,
+    expectedHash: string
+  ): Promise<IpcResult<EntryMutationResult>>
+  /** 删一个变量：清掉中心记录，并把磁盘文件里的那一行一起删掉。 */
+  deleteEntry(entryId: number, expectedHash: string): Promise<IpcResult<EntryMutationResult>>
   listFiles(projectId: number): Promise<IpcResult<EnvFileView[]>>
   diffFile(fileId: number): Promise<IpcResult<FileDiff>>
   adoptDiskFile(fileId: number): Promise<IpcResult<AdoptResult>>

@@ -126,6 +126,36 @@ function asStringArray(value: unknown, field: string): string[] {
   return value.filter((item): item is string => typeof item === 'string')
 }
 
+/**
+ * 并发校验用的磁盘哈希。
+ *
+ * 长度写死 64 是因为它必须是一个 sha256 十六进制串。
+ * 🔴 不接受空值、也不做「没传就跳过校验」—— 少了它守卫就形同虚设，
+ * 宁可让调用失败。写盘的三条路径（写回、编辑、删除）用的是同一道关。
+ */
+function asFileHash(value: unknown): string {
+  if (typeof value !== 'string' || !/^[0-9a-f]{64}$/.test(value)) {
+    throw new RepositoryError('INVALID_ARGUMENT', '缺少 expectedHash，无法做并发校验')
+  }
+  return value
+}
+
+/**
+ * 变量的新值。`.env` 里放 PEM 私钥、JWT 都是正常的，所以上限给得宽，
+ * 但不能不设 —— 渲染层送来的字符串会被原样写进用户的文件。
+ */
+const MAX_VALUE_BYTES = 64 * 1024
+
+function asEntryValue(value: unknown): string {
+  if (typeof value !== 'string') {
+    throw new RepositoryError('INVALID_ARGUMENT', '参数 value 必须是字符串')
+  }
+  if (Buffer.byteLength(value, 'utf8') > MAX_VALUE_BYTES) {
+    throw new RepositoryError('INVALID_ARGUMENT', '值超过 64 KiB，请检查是否粘错了内容')
+  }
+  return value
+}
+
 // ---------------------------------------------------------------------------
 
 export function registerIpcHandlers(): void {
@@ -227,6 +257,28 @@ export function registerIpcHandlers(): void {
     return repo.revealEntry(asPositiveInt(body.entryId, 'entryId'))
   })
 
+  // 编辑和删除都会写盘，所以它们也在「会改变监听基准」的那一组里。
+  handle(CHANNELS.entriesUpdate, (request) => {
+    const body = asRecord(request)
+    const result = repo.updateEntryValue(
+      asPositiveInt(body.entryId, 'entryId'),
+      asEntryValue(body.value),
+      asFileHash(body.expectedHash)
+    )
+    void refreshWatchTargets()
+    return result
+  })
+
+  handle(CHANNELS.entriesDelete, (request) => {
+    const body = asRecord(request)
+    const result = repo.deleteEntry(
+      asPositiveInt(body.entryId, 'entryId'),
+      asFileHash(body.expectedHash)
+    )
+    void refreshWatchTargets()
+    return result
+  })
+
   handle(CHANNELS.filesList, (request) => {
     const body = asRecord(request)
     return repo.listFiles(asPositiveInt(body.projectId, 'projectId'))
@@ -247,15 +299,10 @@ export function registerIpcHandlers(): void {
 
   handle(CHANNELS.filesRestore, (request) => {
     const body = asRecord(request)
-    if (typeof body.expectedHash !== 'string' || body.expectedHash.length !== 64) {
-      // 长度写死 64 是因为它必须是一个 sha256 十六进制串。
-      // 不接受空值 —— 少了它并发校验就形同虚设，宁可让调用失败。
-      throw new RepositoryError('INVALID_ARGUMENT', '缺少 expectedHash，无法做并发校验')
-    }
     const result = repo.restoreFileFromCentral(
       asPositiveInt(body.fileId, 'fileId'),
       asStringArray(body.keys, 'keys'),
-      body.expectedHash
+      asFileHash(body.expectedHash)
     )
     void refreshWatchTargets()
     return result

@@ -318,6 +318,16 @@ export interface EnvEdit {
   occurrence?: number
 }
 
+/** 某个 key 的全部条目节点下标，按出现顺序。 */
+function entryIndexes(nodes: readonly EnvNode[], key: string): number[] {
+  const out: number[] = []
+  for (let i = 0; i < nodes.length; i += 1) {
+    const node = nodes[i]
+    if (node?.kind === 'entry' && node.key === key) out.push(i)
+  }
+  return out
+}
+
 export interface ApplyResult {
   doc: EnvDocument
   /** 实际改动的条目（值确实变了的才算）。 */
@@ -336,9 +346,7 @@ export function applyEdits(doc: EnvDocument, edits: readonly EnvEdit[]): ApplyRe
   const missing: string[] = []
 
   for (const edit of edits) {
-    const indexes = nodes
-      .map((node, index) => (node.kind === 'entry' && node.key === edit.key ? index : -1))
-      .filter((index) => index !== -1)
+    const indexes = entryIndexes(nodes, edit.key)
 
     if (indexes.length === 0) {
       missing.push(edit.key)
@@ -364,6 +372,80 @@ export function applyEdits(doc: EnvDocument, edits: readonly EnvEdit[]): ApplyRe
   }
 
   return { doc: { nodes, hasBom: doc.hasBom }, changed, missing }
+}
+
+export interface EnvTarget {
+  key: string
+  /** 同名 key 出现多次时删第几个（0-based）。默认删最后一个，与 applyEdits 一致。 */
+  occurrence?: number
+}
+
+export interface RemoveResult {
+  doc: EnvDocument
+  removed: { key: string; lineNumber: number }[]
+  /** 文件里找不到的 key，或者该序号不存在。调用方决定是报错还是当作已完成。 */
+  missing: string[]
+}
+
+/**
+ * 删掉整条赋值（连同它的行尾符）。
+ *
+ * 未被点名的节点仍然**复用同一个对象引用**，所以除了消失的那一行，
+ * serialize 出来的其余字节和原文逐字节相同 —— 和 applyEdits 是同一个保证。
+ *
+ * 两处刻意的取舍：
+ *
+ * 1. **越界的 occurrence 报 missing，不像 applyEdits 那样夹到边界上。**
+ *    改错一行还能改回来，删错一行是把用户的数据删了；宁可这次操作失败。
+ * 2. **相邻的注释不动。** `# 这个 key 是干嘛的` 到底属于下面那行、上面那行、
+ *    还是整个段落，只有写它的人知道。猜错就是替用户删掉他的笔记。
+ *
+ * ⚠️ 删掉的若是末行、且原文件末尾没有换行符，前一行的 eol 会留下来，
+ * 于是文件末尾多出一个换行。这是删整行不可避免的：要么留下这个换行，
+ * 要么去改一个我们本来不该碰的节点。留换行更符合惯例。
+ */
+export function removeEntries(doc: EnvDocument, targets: readonly EnvTarget[]): RemoveResult {
+  const doomed = new Set<number>()
+  const removed: RemoveResult['removed'] = []
+  const missing: string[] = []
+
+  for (const target of targets) {
+    const indexes = entryIndexes(doc.nodes, target.key)
+    const pick = target.occurrence ?? indexes.length - 1
+    const index = indexes[pick]
+    if (index === undefined) {
+      missing.push(target.key)
+      continue
+    }
+
+    const node = doc.nodes[index]
+    if (node?.kind !== 'entry') continue
+    doomed.add(index)
+    removed.push({ key: node.key, lineNumber: node.lineNumber })
+  }
+
+  return {
+    doc: { nodes: doc.nodes.filter((_, index) => !doomed.has(index)), hasBom: doc.hasBom },
+    removed,
+    missing
+  }
+}
+
+/** 格式骨架里占据值那个位置的占位符。 */
+export const REDACTED_VALUE = '<value>'
+
+/**
+ * 一行的**格式骨架**：原始行文本，但值的位置换成占位符。
+ *
+ * 🔴 `config_entries.original_format` 是普通 TEXT 列，不加密。
+ * 把 `node.raw` 原样存进去等于让 `API_KEY=sk-...` 的明文落库 ——
+ * 加密边界（HANDOFF §6）就漏在这一列上。所以入库的是骨架而不是原文。
+ *
+ * 骨架保留了 §4.2 要的全部东西：`export` 前缀、等号两侧的空白、引号风格、
+ * 行内注释。唯独不保留值本身，而值恰恰是那一列不该有的东西。
+ */
+export function formatSkeleton(node: EntryNode): string {
+  return node.prefix + encodeValue(REDACTED_VALUE, node.quote).text + node.suffix
 }
 
 /** 文档里全部条目，按出现顺序。 */

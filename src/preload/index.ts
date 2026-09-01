@@ -24,6 +24,7 @@ import {
   type RestoreResult,
   type DatabaseInfo,
   type EntriesQuery,
+  type EntryMutationResult,
   type EnvFileView,
   type EnvVaultApi,
   type ImportProjectRequest,
@@ -63,6 +64,14 @@ const api: EnvVaultApi = {
     ipcRenderer.invoke(CHANNELS.entriesList, query) as Promise<IpcResult<ConfigEntryView[]>>,
   revealEntry: (entryId: number) =>
     ipcRenderer.invoke(CHANNELS.entriesReveal, { entryId }) as Promise<IpcResult<RevealResult>>,
+  updateEntry: (entryId: number, value: string, expectedHash: string) =>
+    ipcRenderer.invoke(CHANNELS.entriesUpdate, { entryId, value, expectedHash }) as Promise<
+      IpcResult<EntryMutationResult>
+    >,
+  deleteEntry: (entryId: number, expectedHash: string) =>
+    ipcRenderer.invoke(CHANNELS.entriesDelete, { entryId, expectedHash }) as Promise<
+      IpcResult<EntryMutationResult>
+    >,
   listFiles: (projectId: number) =>
     ipcRenderer.invoke(CHANNELS.filesList, { projectId }) as Promise<IpcResult<EnvFileView[]>>,
   listActivity: (limit?: number) =>

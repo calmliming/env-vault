@@ -11,6 +11,7 @@ interface OverviewViewProps {
   onAddProject(): void
   onOpenSync(): void
   onOpenDiff(file: EnvFileView): void
+  onDeleteEntry(entry: ConfigEntryView, expectedHash: string): void
   onVaultAction(): void
   showToast(message: string): void
 }
@@ -22,6 +23,7 @@ export function OverviewView({
   onAddProject,
   onOpenSync,
   onOpenDiff,
+  onDeleteEntry,
   onVaultAction,
   showToast
 }: OverviewViewProps): ReactNode {
@@ -35,6 +37,18 @@ export function OverviewView({
    */
   const [revealed, setRevealed] = useState<ReadonlyMap<number, string>>(new Map())
   const [rescanning, setRescanning] = useState(false)
+  /** 正在编辑的条目 id 与草稿值。同一时刻只允许编辑一条。 */
+  const [editing, setEditing] = useState<{ id: number; draft: string } | null>(null)
+  const [saving, setSaving] = useState(false)
+
+  /**
+   * 文件的实时状态。
+   *
+   * 条目上的 `fileDrifted` 是 listEntries 那一刻算出来的，而 `files` 会被
+   * 监听推送不断刷新。要判断「现在能不能就地编辑」，得看后者 ——
+   * 否则用户会看到一个「已同步」的行，点保存却被主进程以「文件有外部改动」拒绝。
+   */
+  const fileById = useMemo(() => new Map(files.map((file) => [file.id, file])), [files])
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase()
@@ -82,6 +96,75 @@ export function OverviewView({
     } catch {
       showToast('复制失败，请检查系统剪贴板权限')
     }
+  }
+
+  /**
+   * 这一条现在能不能就地改。
+   *
+   * 文件有未处理的外部改动时不给编辑入口 —— 这时候写回去等于替用户默默
+   * 选了 §6.4 的方向，把别人的修改覆盖掉。正确路径是先去差异面板选一个方向。
+   * 主进程侧同样会拦（那才是真正的守卫），这里只是别把用户引到死路上。
+   */
+  function editBlockedReason(entry: ConfigEntryView): string | null {
+    const file = fileById.get(entry.fileId)
+    if (!file) return '找不到这个变量的来源文件记录'
+    if (file.currentHash === null) return '来源文件已从磁盘消失'
+    if (file.drifted) return '来源文件在外部被改过，请先在「文件健康度」里处理差异'
+    return null
+  }
+
+  /** 用户看到这一行时文件的磁盘哈希，作为「我这个决定基于哪个版本」送给主进程。 */
+  function expectedHashOf(entry: ConfigEntryView): string | null {
+    return fileById.get(entry.fileId)?.currentHash ?? null
+  }
+
+  function beginEdit(entry: ConfigEntryView): void {
+    const plain = revealed.get(entry.id)
+    // 敏感项默认盲写：编辑框是空的，原值不因为「点了编辑」就跑到屏幕上。
+    // 想看原值就点「显示」，那条路径会留痕（§5.5）。已经显示过的直接预填。
+    const draft = entry.masked ? (plain ?? '') : (plain ?? entry.displayValue)
+    setEditing({ id: entry.id, draft })
+  }
+
+  async function saveEdit(entry: ConfigEntryView): Promise<void> {
+    if (!editing || editing.id !== entry.id) return
+    const expectedHash = expectedHashOf(entry)
+    if (expectedHash === null) {
+      showToast('来源文件已从磁盘消失，无法保存')
+      return
+    }
+
+    setSaving(true)
+    const result = await bridge.updateEntry(entry.id, editing.draft, expectedHash)
+    setSaving(false)
+    if (!result.ok) {
+      showToast(result.message)
+      return
+    }
+
+    setEditing(null)
+    // 手里那份明文缓存已经作废，删掉它让这一行回到掩码态 ——
+    // 留着会显示一个已经不存在的旧值。
+    setRevealed((prev) => {
+      const next = new Map(prev)
+      next.delete(entry.id)
+      return next
+    })
+    await workspace.reloadCurrent()
+    showToast(
+      result.data.written
+        ? `已更新 ${entry.key} 并写回 ${entry.sourceFile}，原文件已备份`
+        : '值没有变化，文件未改动'
+    )
+  }
+
+  function requestDelete(entry: ConfigEntryView): void {
+    const expectedHash = expectedHashOf(entry)
+    if (expectedHash === null) {
+      showToast('来源文件已从磁盘消失，无法删除')
+      return
+    }
+    onDeleteEntry(entry, expectedHash)
   }
 
   async function rescan(): Promise<void> {
@@ -144,7 +227,7 @@ export function OverviewView({
             {rescanning ? '扫描中…' : '重新扫描'}
           </button>
           <button className="outline-btn" onClick={onOpenSync} disabled={locked}>
-            同步到文件
+            处理差异{driftedFiles.length > 0 ? `（${driftedFiles.length}）` : ''}
           </button>
         </div>
       </div>
@@ -264,6 +347,13 @@ export function OverviewView({
                 filtered.map((entry) => {
                   const plain = revealed.get(entry.id)
                   const shown = plain ?? entry.displayValue
+                  const blocked = editBlockedReason(entry)
+                  const drifted = blocked !== null
+                  const isEditing = editing?.id === entry.id
+                  // 敏感项还没点过「显示」时是盲写：编辑框空着，空值不等于"清空"，
+                  // 而是"还没输入"。要真的把它清空，先点显示、再删掉预填的内容。
+                  const blindWrite = entry.masked && plain === undefined
+
                   return (
                     <tr key={entry.id}>
                       <td>
@@ -272,32 +362,99 @@ export function OverviewView({
                         </div>
                       </td>
                       <td>
-                        <div className="value-cell">
-                          <span
-                            className={entry.masked && plain === undefined ? 'value masked' : 'value'}
-                            title={plain ?? undefined}
+                        {isEditing ? (
+                          <form
+                            className="value-edit"
+                            onSubmit={(event) => {
+                              event.preventDefault()
+                              void saveEdit(entry)
+                            }}
                           >
-                            {shown === '' ? <span className="value-empty">（空值）</span> : shown}
-                          </span>
-                          {entry.masked && (
+                            <input
+                              className="value-input"
+                              autoFocus
+                              value={editing.draft}
+                              placeholder={blindWrite ? '输入新值（原值未显示）' : undefined}
+                              aria-label={`${entry.key} 的新值`}
+                              onChange={(e) => setEditing({ id: entry.id, draft: e.target.value })}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Escape') setEditing(null)
+                              }}
+                            />
+                            <button
+                              type="submit"
+                              className="mini-btn"
+                              data-action="save"
+                              title="保存并写回文件"
+                              aria-label={`保存 ${entry.key}`}
+                              disabled={saving || (blindWrite && editing.draft === '')}
+                            >
+                              ✓
+                            </button>
+                            <button
+                              type="button"
+                              className="mini-btn"
+                              data-action="cancel"
+                              title="取消"
+                              aria-label={`取消编辑 ${entry.key}`}
+                              disabled={saving}
+                              onClick={() => setEditing(null)}
+                            >
+                              ✕
+                            </button>
+                          </form>
+                        ) : (
+                          <div className="value-cell">
+                            <span
+                              className={
+                                entry.masked && plain === undefined ? 'value masked' : 'value'
+                              }
+                              title={plain ?? undefined}
+                            >
+                              {shown === '' ? <span className="value-empty">（空值）</span> : shown}
+                            </span>
+                            {entry.masked && (
+                              <button
+                                className="mini-btn"
+                                data-action="reveal"
+                                title="显示或隐藏"
+                                aria-label={`显示或隐藏 ${entry.key}`}
+                                onClick={() => void toggleReveal(entry)}
+                              >
+                                ◉
+                              </button>
+                            )}
                             <button
                               className="mini-btn"
-                              title="显示或隐藏"
-                              aria-label={`显示或隐藏 ${entry.key}`}
-                              onClick={() => void toggleReveal(entry)}
+                              data-action="copy"
+                              title="复制"
+                              aria-label={`复制 ${entry.key}`}
+                              onClick={() => void copyValue(entry)}
                             >
-                              ◉
+                              □
                             </button>
-                          )}
-                          <button
-                            className="mini-btn"
-                            title="复制"
-                            aria-label={`复制 ${entry.key}`}
-                            onClick={() => void copyValue(entry)}
-                          >
-                            □
-                          </button>
-                        </div>
+                            <button
+                              className="mini-btn"
+                              data-action="edit"
+                              title={blocked ?? '编辑并写回文件'}
+                              aria-label={`编辑 ${entry.key}`}
+                              disabled={drifted}
+                              onClick={() => beginEdit(entry)}
+                            >
+                              ✎
+                            </button>
+                            <button
+                              className="mini-btn danger"
+                              data-action="delete"
+                              title={blocked ?? '删除变量，并从文件里删掉那一行'}
+                              aria-label={`删除 ${entry.key}`}
+                              disabled={drifted}
+                              onClick={() => requestDelete(entry)}
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        )}
                       </td>
                       <td>
                         <span className={`type-tag ${entry.valueType}`}>{entry.valueType}</span>
@@ -308,9 +465,9 @@ export function OverviewView({
                         </span>
                       </td>
                       <td>
-                        <span className={entry.fileDrifted ? 'status warn' : 'status'}>
+                        <span className={drifted ? 'status warn' : 'status'}>
                           <span className="status-dot" />
-                          {entry.fileDrifted ? '有差异' : '已同步'}
+                          {drifted ? '有差异' : '已同步'}
                         </span>
                       </td>
                     </tr>

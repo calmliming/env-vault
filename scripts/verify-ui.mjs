@@ -140,7 +140,7 @@ async function runChecks() {
   check('没有通用 invoke 逃生口', isolation.genericInvoke === 'undefined', `typeof=${isolation.genericInvoke}`)
   check(
     'preload 只暴露白名单方法',
-    isolation.bridgeType === 'object' && isolation.bridgeKeys.length === 20,
+    isolation.bridgeType === 'object' && isolation.bridgeKeys.length === 22,
     `${isolation.bridgeKeys.length} 个：${isolation.bridgeKeys.join(', ')}`
   )
 
@@ -193,7 +193,7 @@ async function runChecks() {
   const EXPECTED_KEYS = [
     'APP_NAME', 'BRAND_NEW', 'DATABASE_URL', 'DB_PASSWORD', 'DUP', 'DUP',
     'ENABLE_CACHE', 'LOG_LEVEL', 'NEXTAUTH_SECRET', 'NEXT_PUBLIC_API_URL',
-    'OPENAI_API_KEY', 'PORT', 'SNEAKY', 'STAGE'
+    'OPENAI_API_KEY', 'PORT', 'STAGE'
   ]
   const actualKeys = [...unlocked.keys].sort()
   const expectedSorted = [...EXPECTED_KEYS].sort()
@@ -211,7 +211,9 @@ async function runChecks() {
     unlocked.keys.filter((k) => k === 'DUP').length === 2,
     `DUP 出现 ${unlocked.keys.filter((k) => k === 'DUP').length} 次`
   )
-  check('敏感项默认掩码（§7）', unlocked.maskedCells === 4, `掩码单元格=${unlocked.maskedCells}`)
+  // 五条：OPENAI_API_KEY / DB_PASSWORD / NEXTAUTH_SECRET / DATABASE_URL，
+  // 外加 BRAND_NEW —— 核心验收把它的值改成了一把真 Key，重新分类后就该掩码。
+  check('敏感项默认掩码（§7）', unlocked.maskedCells === 5, `掩码单元格=${unlocked.maskedCells}`)
   check(
     '🔴 解锁后明文密钥仍不在页面上（没点显示就不给）',
     unlocked.bodyHasSecret === false,
@@ -233,7 +235,7 @@ async function runChecks() {
     // 前一步失败时这里会是 undefined。直接返回可读的结论，
     // 而不是抛一个 "Cannot read properties of undefined" 把真正的失败原因盖掉。
     if (!row) return { shown: '', bodyHasSecret: false, missingRow: true };
-    row.querySelector('.mini-btn').click();
+    row.querySelector('[data-action="reveal"]').click();
     await wait(400);
     return {
       shown: row.querySelector('.value')?.textContent.trim() ?? '',
@@ -414,6 +416,176 @@ async function runChecks() {
   check('中心记录已更新为磁盘上的新值', adopted.portValue === '19999', `PORT=${adopted.portValue}`)
   check('处理完差异后徽章回到一致', adopted.envBadge === '一致', `徽章=${adopted.envBadge}`)
 
+  // --- 编辑与删除单个变量（阶段 2 的最后两项）------------------------------
+  //
+  // 走的是真界面 → 真 IPC → 真磁盘：断言分两头看，表格里的值和 `.env`
+  // 文件里的字节都要对上。只看表格的话，一个"改了记录没写盘"的实现也能骗过去。
+  const edit = await evaluate(`(async () => {
+    const wait = (ms) => new Promise(r => setTimeout(r, ms));
+    const rowOf = (key) => [...document.querySelectorAll('.config-table tbody tr')]
+      .find(tr => tr.querySelector('.key-name')?.textContent.trim() === key);
+    const row = rowOf('PORT');
+    if (!row) return { missingRow: true };
+
+    row.querySelector('[data-action="edit"]').click();
+    await wait(150);
+    const input = rowOf('PORT').querySelector('.value-input');
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    setter.call(input, '5000');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    await wait(80);
+    rowOf('PORT').querySelector('[data-action="save"]').click();
+
+    for (let i = 0; i < 40; i++) {
+      await wait(150);
+      if (rowOf('PORT')?.querySelector('.value')?.textContent.trim() === '5000') break;
+    }
+    return {
+      prefilled: input.defaultValue,
+      shown: rowOf('PORT')?.querySelector('.value')?.textContent.trim() ?? '',
+      editorClosed: !rowOf('PORT')?.querySelector('.value-input')
+    };
+  })()`, true)
+
+  check(
+    '编辑框保存后关闭，表格显示新值',
+    edit.shown === '5000' && edit.editorClosed === true,
+    edit.missingRow ? '找不到 PORT 行' : `值=${edit.shown} 编辑框已关=${edit.editorClosed}`
+  )
+  check(
+    '🔴 编辑立刻落到磁盘文件上，不是只改了界面',
+    readFileSync(fixtureEnv, 'utf8').includes('PORT=5000'),
+    readFileSync(fixtureEnv, 'utf8').split('\n').find((l) => l.startsWith('PORT=')) ?? '（没有 PORT 行）'
+  )
+
+  // 🔴 敏感项：点开编辑不等于看见值。编辑框是空的，原值不会因为
+  // "点了编辑"就跑到屏幕上 —— 想看要走「显示」，那条路径会留痕。
+  const blind = await evaluate(`(async () => {
+    const wait = (ms) => new Promise(r => setTimeout(r, ms));
+    const rowOf = (key) => [...document.querySelectorAll('.config-table tbody tr')]
+      .find(tr => tr.querySelector('.key-name')?.textContent.trim() === key);
+    const row = rowOf('DB_PASSWORD');
+    if (!row) return { missingRow: true };
+
+    row.querySelector('[data-action="edit"]').click();
+    await wait(200);
+    const editor = rowOf('DB_PASSWORD');
+    const result = {
+      draft: editor.querySelector('.value-input')?.value ?? null,
+      placeholder: editor.querySelector('.value-input')?.placeholder ?? '',
+      saveDisabled: editor.querySelector('[data-action="save"]')?.disabled ?? null,
+      bodyHasPassword: document.body.innerText.includes('pa#ss word')
+    };
+    editor.querySelector('[data-action="cancel"]').click();
+    await wait(150);
+    return result;
+  })()`, true)
+
+  check(
+    '🔴 敏感项的编辑框默认是空的（盲写），原值没被带到屏幕上',
+    blind.draft === '' && blind.bodyHasPassword === false,
+    blind.missingRow ? '找不到 DB_PASSWORD 行' : `草稿=${JSON.stringify(blind.draft)} 页面含明文=${blind.bodyHasPassword}`
+  )
+  check(
+    '空的编辑框不能保存（空值不等于"清空"）',
+    blind.saveDisabled === true,
+    `disabled=${blind.saveDisabled} placeholder=${blind.placeholder}`
+  )
+
+  // 来源文件对不上时不给编辑入口：写下去等于替用户选了 §6.4 的方向。
+  // .env.staging 已经从磁盘上消失，它的变量就是这种情况。
+  const blocked = await evaluate(`(() => {
+    const row = [...document.querySelectorAll('.config-table tbody tr')]
+      .find(tr => tr.querySelector('.key-name')?.textContent.trim() === 'STAGE');
+    if (!row) return { missingRow: true };
+    return {
+      editDisabled: row.querySelector('[data-action="edit"]').disabled,
+      deleteDisabled: row.querySelector('[data-action="delete"]').disabled,
+      hint: row.querySelector('[data-action="edit"]').title
+    };
+  })()`)
+
+  check(
+    '🔴 来源文件与记录不一致时，编辑和删除都点不动',
+    blocked.editDisabled === true && blocked.deleteDisabled === true,
+    blocked.missingRow ? '找不到 STAGE 行' : `编辑=${blocked.editDisabled} 删除=${blocked.deleteDisabled}`
+  )
+  check(
+    '禁用时说明了为什么，而不是默默不响应',
+    typeof blocked.hint === 'string' && blocked.hint.length > 0,
+    blocked.hint ?? ''
+  )
+
+  // 删除：确认框 → 表格里的行消失 → 文件里的那一行也消失。
+  // BRAND_NEW 的值在核心验收里被改成了一把真 Key，正好用来确认
+  // 确认框不会把被删变量的值铺出来。
+  const BRAND_NEW_SECRET = 'sk-ant-api03-verify-abcdefghijklmnop'
+  const deletion = await evaluate(`(async () => {
+    const wait = (ms) => new Promise(r => setTimeout(r, ms));
+    const rowOf = (key) => [...document.querySelectorAll('.config-table tbody tr')]
+      .find(tr => tr.querySelector('.key-name')?.textContent.trim() === key);
+    const row = rowOf('BRAND_NEW');
+    if (!row) return { missingRow: true };
+
+    row.querySelector('[data-action="delete"]').click();
+    for (let i = 0; i < 40; i++) {
+      await wait(100);
+      if (document.querySelector('.modal-layer')) break;
+    }
+    await wait(200);
+    const title = document.querySelector('#modal-title')?.textContent ?? '';
+    const modalText = document.querySelector('.modal-body')?.innerText ?? '';
+    const confirmLabel = [...document.querySelectorAll('.modal-actions button')]
+      .map(b => b.textContent.trim());
+
+    document.querySelector('.modal-actions .danger-btn').click();
+    for (let i = 0; i < 40; i++) {
+      await wait(150);
+      if (!document.querySelector('.modal-layer') && !rowOf('BRAND_NEW')) break;
+    }
+    return {
+      title,
+      confirmLabel,
+      modalHadSecret: modalText.includes(${JSON.stringify(BRAND_NEW_SECRET)}),
+      closed: !document.querySelector('.modal-layer'),
+      rowGone: !rowOf('BRAND_NEW')
+    };
+  })()`, true)
+
+  check(
+    '删除前先弹确认框，且说明会动哪个文件',
+    deletion.title === '删除 BRAND_NEW',
+    deletion.missingRow ? '找不到 BRAND_NEW 行' : deletion.title
+  )
+  check(
+    '确认按钮文案直说会发生什么',
+    Array.isArray(deletion.confirmLabel) &&
+      deletion.confirmLabel.some((label) => label.includes('删除变量并改写文件')),
+    (deletion.confirmLabel ?? []).join(' / ')
+  )
+  check(
+    '🔴 删除确认框里不显示被删变量的值',
+    deletion.modalHadSecret === false,
+    `含明文=${deletion.modalHadSecret}`
+  )
+  check(
+    '确认后弹窗关闭，表格里的行消失',
+    deletion.closed === true && deletion.rowGone === true,
+    `closed=${deletion.closed} 行已移除=${deletion.rowGone}`
+  )
+  check(
+    '🔴 删除同时从磁盘文件里移除了那一行',
+    !readFileSync(fixtureEnv, 'utf8').includes('BRAND_NEW'),
+    readFileSync(fixtureEnv, 'utf8').split('\n').filter(Boolean).join(' | ')
+  )
+  check(
+    '删除没有波及文件里的其它行',
+    ['# 共享配置', 'APP_NAME=envvault-fixture', 'PORT=5000', 'ENABLE_CACHE=true'].every((line) =>
+      readFileSync(fixtureEnv, 'utf8').includes(line)
+    ),
+    '注释与其余变量都在'
+  )
+
   // --- 操作记录是真的 -------------------------------------------------------
   const activity = await evaluate(`(async () => {
     const wait = (ms) => new Promise(r => setTimeout(r, ms));
@@ -431,8 +603,10 @@ async function runChecks() {
 
   check('操作记录有真实条目', activity.count > 0, `${activity.count} 条`)
   check(
-    '记录包含导入、扫描与显示动作',
-    ['导入项目', '重新扫描', '显示敏感值'].every((label) => activity.labels.includes(label)),
+    '记录包含导入、扫描、显示、编辑与删除动作',
+    ['导入项目', '重新扫描', '显示敏感值', '编辑变量', '删除变量'].every((label) =>
+      activity.labels.includes(label)
+    ),
     [...new Set(activity.labels)].join('、')
   )
   check(
@@ -501,6 +675,43 @@ async function runChecks() {
 
   check('添加项目弹窗可以打开', modal.opened === '添加一个项目', modal.opened)
   check('Esc 关闭弹窗且节点从 DOM 移除', modal.closed === true, `closed=${modal.closed}`)
+
+  // 「处理差异」列的是真实的待处理文件，并如实说明已丢失的那个无从对比 ——
+  // 这里曾经是一句「将在阶段 2 接入」，阶段 2 做完之后它就成了假话。
+  const sync = await evaluate(`(async () => {
+    const wait = (ms) => new Promise(r => setTimeout(r, ms));
+    [...document.querySelectorAll('.head-actions button')]
+      .find(b => b.textContent.includes('处理差异'))?.click();
+    await wait(300);
+    const rows = [...document.querySelectorAll('.diff-row')].map(el => ({
+      path: el.querySelector('.diff-key')?.textContent.trim() ?? '',
+      detail: el.querySelector('.diff-value')?.textContent.trim() ?? '',
+      hasDiffButton: !!el.querySelector('button')
+    }));
+    const title = document.querySelector('#modal-title')?.textContent ?? '';
+    const bodyText = document.querySelector('.modal-body')?.innerText ?? '';
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await wait(200);
+    return { title, rows, mentionsFuturePhase: bodyText.includes('阶段 2') };
+  })()`, true)
+
+  check(
+    '「处理差异」列出真实的待处理文件',
+    sync.title === '待处理的文件差异' &&
+      sync.rows.length === 1 &&
+      sync.rows[0]?.path === '.env.staging',
+    `${sync.title}：${sync.rows.map((r) => r.path).join(', ') || '（空）'}`
+  )
+  check(
+    '已从磁盘消失的文件不给「查看差异」按钮（点开只会报错）',
+    sync.rows[0]?.hasDiffButton === false && sync.rows[0]?.detail.includes('无从对比'),
+    sync.rows[0]?.detail ?? ''
+  )
+  check(
+    '不再声称这个功能"将在阶段 2 接入"',
+    sync.mentionsFuturePhase === false,
+    `含过期说明=${sync.mentionsFuturePhase}`
+  )
 
   check('已截图供目视复核', existsSync(OVERVIEW_SHOT) && existsSync(ACTIVITY_SHOT), `${OVERVIEW_SHOT} / ${ACTIVITY_SHOT}`)
 

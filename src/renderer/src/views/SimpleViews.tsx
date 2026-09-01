@@ -190,16 +190,24 @@ const ACTION_LABELS: Record<string, string> = {
   'project.import': '导入项目',
   'project.rescan': '重新扫描',
   'project.remove': '移除项目',
-  'entry.reveal': '显示敏感值'
+  'entry.reveal': '显示敏感值',
+  'entry.update': '编辑变量',
+  'entry.delete': '删除变量',
+  'file.adopt': '以磁盘为准',
+  'file.restore': '以记录为准写回'
 }
 
 function actionLabel(action: string): string {
   return ACTION_LABELS[action] ?? action
 }
 
+/** 会动到用户磁盘文件、或者读出过明文的动作标橙色，其余按信息量分。 */
 function actionTone(action: string): string {
   if (action === 'entry.reveal') return 'orange'
   if (action === 'project.remove') return 'orange'
+  if (action === 'entry.delete') return 'orange'
+  if (action === 'file.restore') return 'orange'
   if (action === 'project.rescan') return 'blue'
+  if (action === 'entry.update') return 'blue'
   return ''
 }

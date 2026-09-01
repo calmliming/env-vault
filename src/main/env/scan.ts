@@ -10,7 +10,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { basename, join, relative, resolve, sep } from 'node:path'
 import { classify, identifyEnvFile, type Sensitivity, type ValueType } from './classify.ts'
-import { entriesOf, parseEnv } from './document.ts'
+import { entriesOf, formatSkeleton, parseEnv } from './document.ts'
 
 /**
  * 解析器版本。写进 `env_files.parser_version`。
@@ -63,7 +63,12 @@ export interface ScannedEntry {
   valueType: ValueType
   sensitivity: Sensitivity
   lineNumber: number
-  /** 该条目在原文里的完整行文本，写回时用来还原格式（§4.2 original_format）。 */
+  /**
+   * 该条目那一行的**格式骨架**：原始行文本，但值换成了占位符（§4.2 original_format）。
+   *
+   * 🔴 存骨架而不是原始行，是因为它的落点 `config_entries.original_format`
+   * 是一个不加密的 TEXT 列。把 `API_KEY=sk-...` 整行存进去，明文就落库了。
+   */
   originalFormat: string
 }
 
@@ -207,7 +212,7 @@ function readEnvFile(
         valueType,
         sensitivity,
         lineNumber: node.lineNumber,
-        originalFormat: node.raw
+        originalFormat: formatSkeleton(node)
       }
     })
 

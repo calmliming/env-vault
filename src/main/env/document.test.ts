@@ -10,7 +10,15 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { applyEdits, encodeValue, entriesOf, parseEnv, serializeEnv } from './document.ts'
+import {
+  applyEdits,
+  encodeValue,
+  entriesOf,
+  formatSkeleton,
+  parseEnv,
+  removeEntries,
+  serializeEnv
+} from './document.ts'
 
 /** 一份刻意难看的样本：几乎每种边界都塞进去了。 */
 const GNARLY = [
@@ -250,4 +258,111 @@ test('行号指向 key 所在行，多行值之后仍然正确', () => {
   assert.equal(byKey.get('A'), 1)
   assert.equal(byKey.get('B'), 4)
   assert.equal(byKey.get('C'), 6)
+})
+
+// ---------------------------------------------------------------------------
+// 删除整行
+// ---------------------------------------------------------------------------
+
+test('删一个变量：其余字节完全不动，只少了那一行', () => {
+  const doc = parseEnv(GNARLY)
+  const { doc: next, removed, missing } = removeEntries(doc, [{ key: 'PLAIN' }])
+
+  assert.deepEqual(missing, [])
+  assert.equal(removed.length, 1)
+  assert.equal(removed[0]?.key, 'PLAIN')
+
+  const before = GNARLY.split('\n').filter((line) => line !== 'PLAIN=value')
+  assert.deepEqual(serializeEnv(next).split('\n'), before)
+})
+
+test('删除不碰相邻的注释 —— 注释属于谁只有写它的人知道', () => {
+  const doc = parseEnv('# 说明 A\nA=1\n# 说明 B\nB=2\n')
+  const { doc: next } = removeEntries(doc, [{ key: 'A' }])
+  assert.equal(serializeEnv(next), '# 说明 A\n# 说明 B\nB=2\n')
+})
+
+test('删除保留 CRLF：其余行的行尾符不受影响', () => {
+  const doc = parseEnv('A=1\r\nB=2\r\nC=3\r\n')
+  const { doc: next } = removeEntries(doc, [{ key: 'B' }])
+  assert.equal(serializeEnv(next), 'A=1\r\nC=3\r\n')
+})
+
+test('删除多行值时整个节点一起消失', () => {
+  const doc = parseEnv('A=1\nB="第一行\n第二行"\nC=3\n')
+  const { doc: next } = removeEntries(doc, [{ key: 'B' }])
+  assert.equal(serializeEnv(next), 'A=1\nC=3\n')
+})
+
+test('删除重复 key 时默认删最后一个，可按序号指定', () => {
+  const last = removeEntries(parseEnv('DUP=first\nDUP=second\n'), [{ key: 'DUP' }])
+  assert.equal(serializeEnv(last.doc), 'DUP=first\n')
+
+  const first = removeEntries(parseEnv('DUP=first\nDUP=second\n'), [
+    { key: 'DUP', occurrence: 0 }
+  ])
+  assert.equal(serializeEnv(first.doc), 'DUP=second\n')
+})
+
+test('🔴 越界的 occurrence 报 missing，不退而求其次删掉邻居', () => {
+  const doc = parseEnv('DUP=first\nDUP=second\n')
+  const { doc: next, removed, missing } = removeEntries(doc, [{ key: 'DUP', occurrence: 5 }])
+  assert.deepEqual(missing, ['DUP'])
+  assert.deepEqual(removed, [])
+  assert.equal(serializeEnv(next), 'DUP=first\nDUP=second\n', '一个字节都不该少')
+})
+
+test('不存在的 key 进 missing，文件不动', () => {
+  const doc = parseEnv('A=1\n')
+  const { doc: next, missing } = removeEntries(doc, [{ key: 'NOPE' }])
+  assert.deepEqual(missing, ['NOPE'])
+  assert.equal(serializeEnv(next), 'A=1\n')
+})
+
+test('一次删多个，互不干扰', () => {
+  const doc = parseEnv('A=1\nB=2\nC=3\nD=4\n')
+  const { doc: next, removed } = removeEntries(doc, [{ key: 'B' }, { key: 'D' }])
+  assert.deepEqual(removed.map((r) => r.key), ['B', 'D'])
+  assert.equal(serializeEnv(next), 'A=1\nC=3\n')
+})
+
+test('删掉末行后前一行的换行符留下来（文件不以半行结尾）', () => {
+  const doc = parseEnv('A=1\nB=2')
+  const { doc: next } = removeEntries(doc, [{ key: 'B' }])
+  assert.equal(serializeEnv(next), 'A=1\n')
+})
+
+test('删光所有条目后剩下空文件', () => {
+  const doc = parseEnv('A=1\n')
+  const { doc: next } = removeEntries(doc, [{ key: 'A' }])
+  assert.equal(serializeEnv(next), '')
+})
+
+// ---------------------------------------------------------------------------
+// 格式骨架
+// ---------------------------------------------------------------------------
+
+test('🔴 格式骨架不含值 —— original_format 那一列不加密', () => {
+  const doc = parseEnv('OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz012345\n')
+  const skeleton = formatSkeleton(entriesOf(doc)[0]!)
+  assert.equal(skeleton.includes('sk-proj-'), false, '骨架里出现了明文片段')
+  assert.equal(skeleton, 'OPENAI_API_KEY=<value>')
+})
+
+test('格式骨架保留 export、空白、引号风格与行内注释', () => {
+  const doc = parseEnv(
+    ['export A=bare', "B='single'", 'C="double"', '  D   =   padded  ', 'E=x   # 说明'].join('\n')
+  )
+  assert.deepEqual(entriesOf(doc).map(formatSkeleton), [
+    'export A=<value>',
+    "B='<value>'",
+    'C="<value>"',
+    '  D   =   <value>  ',
+    'E=<value>   # 说明'
+  ])
+})
+
+test('多行值的骨架收敛成一行，不把换行带进那一列', () => {
+  const doc = parseEnv('B="第一行\n第二行"\n')
+  assert.equal(formatSkeleton(entriesOf(doc)[0]!), 'B="<value>"')
 })
