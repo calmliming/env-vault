@@ -53,6 +53,8 @@ Electron + React + TypeScript，数据全部留在本机，敏感值加密存储
 ```powershell
 pnpm dev       # 开发模式，Vite HMR + Electron
 pnpm verify    # 全套：180 单元测试 + 187 核心断言 + 113 界面断言，约 2 分钟
+               # 单元测试是 179 通过 + 1 跳过：write.test.ts 的 POSIX 权限位，
+               # Windows 上恒跳，skip 里写了理由。这是目前唯一一条跳过，多出来就要查。
 
 # CLI（阶段 5a）。打包后是 EnvVault.exe run --…
 electron . run --project fixture --env local -- node -v
@@ -63,16 +65,18 @@ electron . run --help
 > 真 git 才验得出东西）。**这台机器上必须有 git**，否则那一组会响亮地失败 ——
 > 这是故意的，静默跳过的断言和通过的断言在报告上长得一模一样。
 
-> ⚠️ **单独跑 `verify:core` 或 `verify:ui` 之前先 `pnpm build`。**
-> CLI 的端到端走的是 `electron .` → package.json 的 main → `out/main/index.js`，
-> 那是 build 的产物；产物旧了就是在验上一版的代码。
-> 这和上面那条 `verify:ui` 用 `verify:core` 生成的包，是同一类坑。
+> ⚠️ **两条「验的其实是旧产物」的坑，形状完全一样，都在单独跑某一步时中招：**
+>
+> - `verify:ui` 跑的是 `out/verify/index.mjs` 这个**已构建**的产物，而它由
+>   `verify:core` 那一步的 esbuild 生成。只改了 `verify-core.ts` 就直接跑
+>   `verify:ui`，用的还是旧包 —— 会看到一堆莫名其妙对不上的失败。
+> - CLI 的端到端走的是 `electron .` → package.json 的 main → `out/main/index.js`，
+>   那是 `pnpm build` 的产物。**单独跑 `verify:core` 或 `verify:ui` 之前先 `pnpm build`。**
+>
+> `pnpm verify` 的顺序（test → build → verify:core → verify:ui）本来就是对的，
+> 单独跑其中一步时要自己保证产物是新的。产物旧了不会报错，只会安静地验上一版代码。
 
 `pnpm verify` 全绿是当前基线。**动任何代码前先跑一次**，确认起点是干净的。
-
-> ⚠️ `verify:ui` 跑的是 `out/verify/index.mjs` 这个**已构建**的产物，
-> 而它由 `verify:core` 那一步的 esbuild 生成。只改了 `verify-core.ts` 就直接跑
-> `verify:ui`，用的还是旧包 —— 会看到一堆莫名其妙对不上的失败。
 
 其它命令：
 
@@ -334,10 +338,10 @@ MVP 清单（计划 §11）到 4b 就全成立了，5a 又补上了 CLI 注入�
 顺带：`envvault` 装进 PATH 是发布时的事（electron-builder 的安装器），
 5a 没做。现在打包后是 `EnvVault.exe run -- <命令>`。
 
-## 8. 四条来自踩坑的经验
+## 8. 来自踩坑的经验
 
 **一条从来没红过的断言，要么是代码真的对，要么是断言根本够不着它 ——
-这两种情况在测试报告上长得一模一样。** 这条在这个仓库里已经踩中三次：
+这两种情况在测试报告上长得一模一样。** 这条在这个仓库里已经踩中四次：
 
 - 阶段 2 的并发守卫写成了摆设：写入前自己重新算一遍磁盘哈希再拿去校验，
   那当然永远相等（PHASE-2 §5）；
@@ -346,6 +350,10 @@ MVP 清单（计划 §11）到 4b 就全成立了，5a 又补上了 CLI 注入�
 - 阶段 3 收尾那条「没验出结论时不改状态」，四个用例里有一个够不着 ——
   它从 `invalid` 起步，而错误的写入正好也写 `invalid`，时间戳还落在
   同一毫秒里（PHASE-3 §7）。**断言的起点选错了，它就什么都守不住。**
+- 阶段 5a 的端到端第一版写在 `verify:core` 里，那儿的 userData 凑不齐
+  数据库和 safeStorage 密钥，**CLI 根本没起来** —— 而「磁盘上搜不到 Key」
+  那条照样 PASS：没跑过的注入当然不会往磁盘上写东西。挪到 `verify:ui`
+  才真的验到（PHASE-5A §8）。**先确认被测的东西真的跑起来了，再信它的绿。**
 
 **判断一条断言有没有用的办法是把 bug 放回去跑一遍。**
 `original_format` 那条就是这么确认的：把泄漏改回原样，老断言依然 PASS，
@@ -368,6 +376,14 @@ MVP 清单（计划 §11）到 4b 就全成立了，5a 又补上了 CLI 注入�
 
 构建失败 + 旧产物 = 一次什么都没验到的实验，而它和「断言无效」在结果上
 长得一模一样。**别把构建输出重定向到 `/dev/null`。**
+
+**证明「没有多出东西」要用前后快照，不要用白名单排除。**
+阶段 5a 的「不落盘」第一版是「扫出所有含这把 Key 的文件，再排掉 fixture 目录」，
+当场误报 —— 写盘时自动建的备份目录里本来就有这把 Key。更糟的是白名单这条思路
+会越加越长，每加一条都在扩大"看不见的地方"，迟早把真正的泄漏一起放过。
+改成在一次**成功的**注入前后各扫一遍、比较集合有没有增长，这才直接回答了
+要问的那个问题：这次运行有没有让磁盘上多出一份（PHASE-5A §8）。
+**导出那一刀要回答同一个形状的问题（哪些文件是这次导出造成的），别退回白名单。**
 
 **一条会随机变红的断言比没有断言更糟。** 阶段 3 留下的
 `!fingerprint.includes('cdef')` 就是：指纹是 16 位十六进制，而 `cdef`
