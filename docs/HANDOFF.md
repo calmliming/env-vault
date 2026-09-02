@@ -23,25 +23,35 @@ Electron + React + TypeScript，数据全部留在本机，敏感值加密存储
 | 1 项目与 `.env*` 全量扫描 | ✅ | [PHASE-1.md](PHASE-1.md) |
 | 2 通用配置工作台 | ✅ | [PHASE-2.md](PHASE-2.md) |
 | 3 模型凭据库 | ✅ | [PHASE-3.md](PHASE-3.md) |
-| 4 安全中心与轮换 | ⬜ 未开始 | — |
+| 4a Git 风险检查 | ✅ | [PHASE-4A.md](PHASE-4A.md) |
+| 4b 凭据版本与剪贴板 | ⬜ 未开始 | — |
 | 5 CLI 与高级集成 | ⬜ 未开始 | — |
+
+阶段 4 的验收句本来就是两半，所以拆成了两刀：
+「被 Git 跟踪的敏感文件必须显示风险」（4a，已完成）+
+「轮换旧 Key 时能准确列出受影响的项目和环境」（4b）。
 
 **能用的功能**：选目录 → 扫描预览 → 勾选文件导入 → 加密入库 → 分环境查看/搜索 →
 点开显示敏感值（留痕）→ 文件被外部改动时自动提醒 → 逐变量看差异 →
 选择「以磁盘为准」或「以中心记录为准」（原子写回 + 自动备份）→
 就地编辑或删除单个变量 → 从变量识别并提取模型凭据 → 一个凭据绑定多个项目环境 →
 改一次 Key 预览并同步到全部绑定（同样是原子写回 + 备份 + 并发校验）→
-向厂商验证一把 Key 现在还能不能用。
+向厂商验证一把 Key 现在还能不能用 →
+查每个 `.env*` 有没有被 Git 跟踪 / 被 .gitignore 覆盖，并给出风险等级和处置办法。
 
-**界面上诚实标注为"尚未接入"的**：Git 风险扫描（阶段 4）、剪贴板定时清理（阶段 4）。
+**界面上诚实标注为"尚未接入"的**：剪贴板定时清理（4b）。
 这些地方的表单/空态是有的，**没有任何地方假装完成了实际没做的事** —— 请保持这条。
 
 ## 2. 先跑一遍
 
 ```powershell
 pnpm dev       # 开发模式，Vite HMR + Electron
-pnpm verify    # 全套：120 单元测试 + 149 核心断言 + 88 界面断言，约 1 分钟
+pnpm verify    # 全套：148 单元测试 + 163 核心断言 + 97 界面断言，约 1 分钟
 ```
+
+> ⚠️ `verify:core` 会在沙箱里 `git init` 一个真仓库（安全检查那一层只有对着
+> 真 git 才验得出东西）。**这台机器上必须有 git**，否则那一组会响亮地失败 ——
+> 这是故意的，静默跳过的断言和通过的断言在报告上长得一模一样。
 
 `pnpm verify` 全绿是当前基线。**动任何代码前先跑一次**，确认起点是干净的。
 
@@ -84,6 +94,7 @@ src/shared/          三个进程共用的类型
   ipc.ts             IPC 契约：通道名 + 载荷 + IpcResult 信封。唯一真源
   env-types.ts       ValueType / Sensitivity（领域枚举，不依赖 IPC）
   provider-types.ts  ValidationOutcome（同上，被 providers/ 和 ipc.ts 共用）
+  security-types.ts  RiskLevel + RISK_ORDER（同上，被 git/ 和 ipc.ts 共用）
 
 src/main/
   index.ts           启动顺序：单实例锁 → ready → CSP → 建库迁移 → IPC → 开窗 → 监听
@@ -97,9 +108,16 @@ src/main/
     migrator.ts      PRAGMA user_version 做版本游标
     repositories.ts  项目 / 文件 / 配置项的数据访问 + 明文加解密边界
     credentials.ts   模型凭据与绑定；写盘复用 repositories 的 writeGuarded
+    security.ts      安全检查：磁盘扫描 + 库里的敏感度计数 + git 状态 → 风险报告
+                     🔴 全程不解密，所以 Vault 锁着也能用
   net/
     transport.ts     🔴 全应用唯一真的碰 socket 的文件。单独一个目录，
                      是为了让「谁会上网」有一个一句话的答案
+  git/               ⚠️ 同样要能被 node --test 跑，约定见 §5
+    run.ts           🔴 全应用唯一执行外部程序的文件（起 git 子进程）。
+                     execFile + 参数数组，固定带 -c core.fsmonitor= 见 §5
+    inspect.ts       问 tracked / ignored，解析 -z 输出。runner 可注入
+    risk.ts          风险判定表。🔴 unknown ≠ ok，理由见 PHASE-4A §4
   providers/         ⚠️ 同样要能被 node --test 跑，约定见 §5
     index.ts         厂商适配器。🔴 纯函数，不发网络请求
     validate.ts      发请求 + 把响应翻译成结论。传输层是注入的，所以这里
@@ -129,12 +147,12 @@ index.html           阶段 0 之前的 HTML 原型，留作视觉对照，不�
 
 ## 5. 不明显的约定（改代码前必读）
 
-**`src/main/env/` 和 `src/main/providers/` 里的 import 必须带 `.ts` 后缀，
-且不能用 `@shared/*` 别名。** 这些模块要能被 `node --test` 直接跑，
-而 Node 的 ESM 解析不会替你补扩展名。
+**`src/main/env/`、`src/main/providers/` 和 `src/main/git/` 里的 import
+必须带 `.ts` 后缀，且不能用 `@shared/*` 别名。** 这些模块要能被 `node --test`
+直接跑，而 Node 的 ESM 解析不会替你补扩展名。
 其它目录保持无后缀。`tsconfig.node.json` 里为此开了 `allowImportingTsExtensions`。
 
-**这两个目录里也不能用构造函数参数属性**（`constructor(readonly x: T)`）。
+**这三个目录里也不能用构造函数参数属性**（`constructor(readonly x: T)`）。
 Node 的类型剥离是 strip-only 的，会报 `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX`。
 写成显式字段赋值。其它目录不受限制（`repositories.ts` 的 `RepositoryError` 就用了）。
 
@@ -167,6 +185,18 @@ Node 的类型剥离是 strip-only 的，会报 `ERR_UNSUPPORTED_TYPESCRIPT_SYNT
 
 **生产 CSP 不含 `unsafe-inline`。** 渲染层不要写内联 `style` 字符串，
 动态颜色用修饰类或 CSS 变量。
+
+**起 git 时固定带 `-c core.fsmonitor=` 和 `--no-optional-locks`。**
+仓库本地的 `.git/config` 里 `core.fsmonitor` 的值是一条**会被 git 执行的命令** ——
+而这个应用是在用户选的任意目录里跑 git，这是有记录的 RCE 向量。
+命令行上的 `-c` 压过仓库配置，堵掉它成本为零。另外一律 `execFile` + 参数数组，
+永不 `exec`（路径是用户能控制的内容，交给 shell 解析等于把它当代码）。
+
+**`git check-ignore` 必须带 `--no-index`，退出码 1 不算失败。**
+默认它不把已跟踪的文件报成 ignored，于是「已在 .gitignore 里但仍被跟踪」——
+整个安全检查最有价值的那条结论 —— 会永远检测不到。退出码 1 的意思是
+「你问的这些一个都没被忽略」，当成失败的话，没有 .gitignore 的项目
+（最该报警的那种）会整页显示「查不了」。两条都有断言守着，见 PHASE-4A §3、§5。
 
 **验收进程里 `ENVVAULT_BLOCK_NETWORK=1`，真传输见到它就拒发。**
 `verify-core.ts` 在脚本开头设上，`verify-ui.mjs` 给它 spawn 的进程也带上。
@@ -218,24 +248,31 @@ Node 的类型剥离是 strip-only 的，会报 `ERR_UNSUPPORTED_TYPESCRIPT_SYNT
 同理，`credential.validate` 的操作记录只记厂商名、凭据名、结论和状态码，
 **连调用地址都不记** —— 自定义厂商的地址是用户填的，谁也不敢保证里面没有秘密。
 
-## 7. 下一步：阶段 4，安全中心与轮换
+## 7. 下一步：阶段 4b，凭据版本与剪贴板
 
-计划 §9 阶段 4 的交付：Git tracked 检查、`.gitignore` 覆盖检查、
-疑似敏感值的风险分级、凭据版本与轮换的影响范围预览、剪贴板定时清理。
+阶段 4 的后半段，对应验收句的后半句「轮换旧 Key 时能准确列出受影响的项目和环境」。
 
-其中两件的机器已经就位，主要是补外围：
+机器基本就位，主要是补外围：
 
-- **轮换**本身做完了（换 Key + 状态退回未验证 + 预览并同步到全部绑定）。
-  阶段 4 要补的是「旧版本标记 revoked」和不含明文的版本审计记录。
-- **影响范围预览**就是 `previewCredentialSync`，已经按绑定逐条算好了状态，
-  轮换那一页直接复用即可，别另写一份。
+- **轮换**本身在阶段 3 就做完了（换 Key + 状态退回未验证 + 预览并同步到全部绑定）。
+  4b 要补的是「旧版本标记 revoked」和**不含明文的**版本记录（迁移 005）。
+  🔴 版本表里**不要存旧 Key 的密文** —— 留着旧密钥是纯粹的负债，
+  而轮换的全部意义就是让旧的那把作废。只存指纹、末四位和时间。
+- **影响范围预览**就是现成的 `previewCredentialSync`，已经按绑定逐条算好了状态。
+  轮换那一页直接复用，**别另写一份** —— 两份算法必然分叉。
+  现在的轮换弹窗是先改完再让用户去同步，4b 要把影响范围**前置**到确认之前。
+- **剪贴板定时清理**（计划 §7：默认 30 秒）。界面上现在还写着
+  「自动清理将在阶段 4 接入」（`CredentialsView` 的 `copyKey`），做完记得改掉 ——
+  过期的说明比没有说明更糟。
 
-没做过的是 Git 那一块和剪贴板清理。界面上现在写着
-「自动清理将在阶段 4 接入」（`CredentialsView` 的 `copyKey`），
-做完记得把那句话改掉 —— 过期的说明比没有说明更糟。
+  顺手把复制整个挪进主进程：现在复制要先 `revealCredential` 把明文取到渲染层，
+  而主进程自己就能写剪贴板 —— 挪过去之后**复制不再需要明文过桥**，
+  §6 那张图里能少一条线。清理时必须先确认剪贴板里**还是我们写进去的那份**
+  （比对哈希，别存明文），否则会把用户后来复制的东西一起清掉。
 
-出站流量这条边界已经开了，但**它只覆盖「用户点验证」这一条路**。
-阶段 4 如果要做别的联网功能，那是另一次评估，不要默认沿用。
+两条外部边界都已经开了，但它们各自只覆盖一条路：
+出站流量只在「用户点验证」时发生，执行外部程序只在安全检查里发生。
+4b 如果要做别的，那是另一次评估，不要默认沿用。
 
 ## 8. 四条来自踩坑的经验
 
@@ -255,6 +292,13 @@ Node 的类型剥离是 strip-only 的，会报 `ERR_UNSUPPORTED_TYPESCRIPT_SYNT
 新断言才报出 `泄漏的列: original_format`。写完一条 🔴 断言顺手做一次，成本一分钟。
 上面第三条也是这么抓到的 —— 而且注意它**红了**（三个用例失败），
 差一点就当成"断言有效"收工了。**看的不能只是红没红，还得看红得对不对。**
+
+阶段 4a 又碰到一次同样的形状：摘掉 `git check-ignore` 的 `--no-index` 之后，
+断言确实红了 —— 但**红的不是等级那条**。`.env.local` 里有高危值，
+判定表的另一条照样把它兜成 critical，所以只断言 `level === 'critical'`
+会让这个 bug 完整漏过去，而受害的是另一种文件：已跟踪 + 已忽略但暂时干净的
+那种，它会从 warning 静默掉到 ok。真正抓住它的是 `ignored === true`
+和「理由里有没有那句话」这几条子断言。**断言要盯住机制，不只盯住结论。**
 
 （并发守卫那条是另一种发现方式 —— 补上一个**真正的**并发场景才暴露出来。
 几种办法解决的是同一个问题：确认断言能到达它要守的那个分支。

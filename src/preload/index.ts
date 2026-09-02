@@ -43,6 +43,7 @@ import {
   type RescanResult,
   type RevealResult,
   type ScanPreview,
+  type SecurityReport,
   type SelectDirectoryRequest,
   type SelectDirectoryResult,
   type VaultStatus
@@ -135,6 +136,11 @@ const api: EnvVaultApi = {
   ) =>
     ipcRenderer.invoke(CHANNELS.credentialsSync, { credentialId, targets }) as Promise<
       IpcResult<CredentialSyncResult>
+    >,
+  /** 🔴 唯一会让应用执行外部程序的桥（起 git 子进程做只读检查）。 */
+  scanSecurity: (projectId: number) =>
+    ipcRenderer.invoke(CHANNELS.securityScan, { projectId }) as Promise<
+      IpcResult<SecurityReport>
     >,
   listActivity: (limit?: number) =>
     ipcRenderer.invoke(CHANNELS.activityList, { limit }) as Promise<IpcResult<ActivityRecord[]>>,

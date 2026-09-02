@@ -24,6 +24,7 @@ import {
 import { getDatabaseInfo, initializeDatabase } from '../db'
 import * as repo from '../db/repositories'
 import * as credentials from '../db/credentials'
+import * as security from '../db/security'
 import { RepositoryError } from '../db/repositories'
 import * as vault from '../security/vault'
 import { VaultError } from '../security/vault'
@@ -400,6 +401,24 @@ export function registerIpcHandlers(): void {
   handle(CHANNELS.credentialsUnbind, (request) => {
     const body = asRecord(request)
     return credentials.unbindCredential(asPositiveInt(body.bindingId, 'bindingId'))
+  })
+
+  // --- 安全检查（阶段 4a）----------------------------------------------------
+
+  /**
+   * 🔴 全应用唯一会执行外部程序的通道 —— 它会起 git 子进程。
+   *
+   * 和 `credentialsValidate` 一样，这里**不接受**任何来自渲染层的 runner：
+   * 能决定「执行什么程序」的只有主进程。假 runner 是验收脚本直接调
+   * `security.scanSecurity` 时注入的，不经过 IPC。
+   *
+   * 但触发规矩和验证请求**不同**：这个允许打开页面时自动跑。
+   * 它是本地只读操作，没有费用、没有副作用、不外发任何数据 ——
+   * 而一个需要先点一下才肯工作的安全检查，等于没有。
+   */
+  handle(CHANNELS.securityScan, (request) => {
+    const body = asRecord(request)
+    return security.scanSecurity(asPositiveInt(body.projectId, 'projectId'))
   })
 
   handle(CHANNELS.credentialsSyncPreview, (request) => {

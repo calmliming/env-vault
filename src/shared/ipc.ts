@@ -10,6 +10,7 @@
 
 import type { Sensitivity, ValueType } from './env-types.ts'
 import type { ValidationOutcome } from './provider-types.ts'
+import type { RiskLevel } from './security-types.ts'
 
 export type { Sensitivity, ValueType }
 
@@ -42,6 +43,7 @@ export const CHANNELS = {
   credentialsUnbind: 'credentials:unbind',
   credentialsSyncPreview: 'credentials:sync-preview',
   credentialsSync: 'credentials:sync',
+  securityScan: 'security:scan',
   filesList: 'files:list',
   filesDiff: 'files:diff',
   filesAdopt: 'files:adopt',
@@ -530,6 +532,56 @@ export interface CredentialValidationResult {
   conclusive: boolean
 }
 
+/**
+ * 安全检查里单个文件的结论（阶段 4）。
+ *
+ * 🔴 这个类型里**没有任何能放配置值的字段** —— 只有计数。
+ * 不是靠主进程自觉不填，是类型上就填不进去。
+ */
+export interface FileRisk {
+  /** 项目内相对路径。 */
+  relativePath: string
+  fileName: string
+  environment: string
+  isTemplate: boolean
+  /** 已经导入中心库，还是只在磁盘上发现的。 */
+  managed: boolean
+  /** 文件当前还在磁盘上。已纳管但被删掉的文件仍然会出现在报告里。 */
+  onDisk: boolean
+  /**
+   * 被 Git 跟踪 / 被忽略规则覆盖。
+   * 🔴 `null` 是「没查出来」，不是「否」—— git 不可用时两个都是 null。
+   */
+  tracked: boolean | null
+  ignored: boolean | null
+  /** 命中的忽略规则，形如 `.gitignore:3:.env*`。 */
+  ignoreRule: string | null
+  entryCount: number
+  highCount: number
+  sensitiveCount: number
+  level: RiskLevel
+  /** 为什么是这个等级。 */
+  reason: string
+  /** 该怎么办。没有可执行动作时为 null。 */
+  remedy: string | null
+}
+
+export interface SecurityReport {
+  projectId: number
+  projectName: string
+  gitRoot: string | null
+  /**
+   * 非 null 表示 Git 状态这一半没查出来（没装 git、或不在仓库里），
+   * 此时所有 `tracked` / `ignored` 都是 null，等级都是 unknown。
+   */
+  gitUnavailable: string | null
+  files: FileRisk[]
+  summary: { critical: number; warning: number; unknown: number; ok: number }
+  /** 目录遍历触到深度或数量上限，没扫全。 */
+  truncated: boolean
+  scannedAt: number
+}
+
 /** 监听到的文件变化，由主进程主动推送。 */
 export interface FileChangedEvent {
   fileId: number
@@ -631,6 +683,12 @@ export interface IpcContract {
     request: { credentialId: number; targets: { bindingId: number; expectedHash: string }[] }
     response: CredentialSyncResult
   }
+  /**
+   * 🔴 全应用唯一会执行外部程序的通道（它会起 git 子进程）。
+   * 和验证请求不同，这个是**只读、本地、无副作用**的，所以允许打开页面时
+   * 自动跑 —— 一个需要先点一下才肯工作的安全检查，等于没有。
+   */
+  [CHANNELS.securityScan]: { request: { projectId: number }; response: SecurityReport }
   [CHANNELS.filesList]: { request: { projectId: number }; response: EnvFileView[] }
   [CHANNELS.filesDiff]: { request: { fileId: number }; response: FileDiff }
   [CHANNELS.filesAdopt]: { request: { fileId: number }; response: AdoptResult }
@@ -727,6 +785,9 @@ export interface EnvVaultApi {
     credentialId: number,
     targets: { bindingId: number; expectedHash: string }[]
   ): Promise<IpcResult<CredentialSyncResult>>
+
+  /** 🔴 唯一会让应用执行外部程序的方法（起 git 子进程）。 */
+  scanSecurity(projectId: number): Promise<IpcResult<SecurityReport>>
 
   listFiles(projectId: number): Promise<IpcResult<EnvFileView[]>>
   diffFile(fileId: number): Promise<IpcResult<FileDiff>>

@@ -76,6 +76,7 @@ export const bridge = {
   adoptDiskFile: (fileId: number) => call(() => window.envvault.adoptDiskFile(fileId)),
   restoreFile: (fileId: number, keys: string[], expectedHash: string) =>
     call(() => window.envvault.restoreFile(fileId, keys, expectedHash)),
+  scanSecurity: (projectId: number) => call(() => window.envvault.scanSecurity(projectId)),
   listActivity: (limit?: number) => call(() => window.envvault.listActivity(limit)),
 
   // --- 模型凭据（阶段 3）---

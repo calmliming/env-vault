@@ -28,6 +28,7 @@ const ELECTRON = join(process.cwd(), 'node_modules', 'electron', 'dist', 'electr
 const OVERVIEW_SHOT = join(process.cwd(), 'out', 'verify-ui-overview.png')
 const ACTIVITY_SHOT = join(process.cwd(), 'out', 'verify-ui-activity.png')
 const CREDENTIALS_SHOT = join(process.cwd(), 'out', 'verify-ui-credentials.png')
+const SECURITY_SHOT = join(process.cwd(), 'out', 'verify-ui-security.png')
 const sandbox = mkdtempSync(join(tmpdir(), 'envvault-ui-'))
 
 /** 样例数据里那把假 Key。整个流程都在确认它不会意外出现在页面上。 */
@@ -147,8 +148,8 @@ async function runChecks() {
   check('没有通用 invoke 逃生口', isolation.genericInvoke === 'undefined', `typeof=${isolation.genericInvoke}`)
   check(
     'preload 只暴露白名单方法',
-    // 阶段 3 收尾加了 validateCredential，33 → 34。
-    isolation.bridgeType === 'object' && isolation.bridgeKeys.length === 34,
+    // 阶段 3 收尾加了 validateCredential（33 → 34），阶段 4a 加了 scanSecurity（→ 35）。
+    isolation.bridgeType === 'object' && isolation.bridgeKeys.length === 35,
     `${isolation.bridgeKeys.length} 个：${isolation.bridgeKeys.join(', ')}`
   )
 
@@ -923,6 +924,72 @@ async function runChecks() {
     '注释与其余变量都在'
   )
 
+  // --- 安全检查页是真的（阶段 4a）-------------------------------------------
+  //
+  // 这一页现在会起 git 子进程去问跟踪状态。样例项目是个真仓库
+  // （verify-core 的 buildGitFixture 建的），所以这里验的是完整那条链：
+  // 界面 → IPC → 起 git → 判定 → 渲染。
+  const securityPage = await evaluate(`(async () => {
+    const wait = (ms) => new Promise(r => setTimeout(r, ms));
+    [...document.querySelectorAll('.nav button')].find(b => b.textContent.includes('安全检查')).click();
+    for (let i = 0; i < 60; i++) {
+      await wait(100);
+      if (document.querySelector('[data-risk]')) break;
+    }
+    const rows = [...document.querySelectorAll('[data-risk]')].map(el => ({
+      path: el.getAttribute('data-path'),
+      level: el.getAttribute('data-risk'),
+      text: el.innerText
+    }));
+    return {
+      rows,
+      // 最危险的必须排最前 —— 用户不该需要往下翻才看到高危项。
+      firstLevel: rows[0]?.level ?? '',
+      bodyText: document.body.innerText,
+      bodyHasSecret: document.body.innerText.includes(${JSON.stringify(FIXTURE_SECRET)})
+    };
+  })()`, true)
+
+  const leakedRow = securityPage.rows.find((row) => row.path === '.env.local')
+
+  check(
+    '安全检查页列出了真实的风险条目',
+    securityPage.rows.length >= 4,
+    securityPage.rows.map((r) => `${r.path}(${r.level})`).join(' / ') || '（一条都没有）'
+  )
+  check(
+    '🔴 已提交又补进 .gitignore 的文件被标成高危',
+    leakedRow?.level === 'critical',
+    `${leakedRow?.path}=${leakedRow?.level}`
+  )
+  check(
+    '🔴 并且在界面上直说了忽略规则对已跟踪的文件无效',
+    (leakedRow?.text ?? '').includes('忽略规则对已跟踪的文件无效'),
+    (leakedRow?.text ?? '').split('\n').find((line) => line.includes('忽略规则')) ?? '（没有这句话）'
+  )
+  check(
+    '🔴 处置办法给到了具体命令',
+    (leakedRow?.text ?? '').includes('git rm --cached'),
+    (leakedRow?.text ?? '').includes('git rm --cached') ? '给了 git rm --cached' : '（没有给命令）'
+  )
+  check(
+    '高危项排在最前面，不用往下翻',
+    securityPage.firstLevel === 'critical',
+    `第一条=${securityPage.firstLevel}`
+  )
+  check(
+    '🔴 不再声称 Git 检查"属于阶段 4"',
+    !securityPage.bodyText.includes('阶段 4'),
+    securityPage.bodyText.includes('阶段 4') ? '页面上还留着过期说明' : '过期说明已清掉'
+  )
+  check(
+    '🔴 安全检查页面不含任何明文值',
+    securityPage.bodyHasSecret === false,
+    `包含明文=${securityPage.bodyHasSecret}`
+  )
+
+  await capture(SECURITY_SHOT)
+
   // --- 操作记录是真的 -------------------------------------------------------
   const activity = await evaluate(`(async () => {
     const wait = (ms) => new Promise(r => setTimeout(r, ms));
@@ -1063,8 +1130,11 @@ async function runChecks() {
 
   check(
     '已截图供目视复核',
-    existsSync(OVERVIEW_SHOT) && existsSync(ACTIVITY_SHOT) && existsSync(CREDENTIALS_SHOT),
-    `${OVERVIEW_SHOT} / ${ACTIVITY_SHOT} / ${CREDENTIALS_SHOT}`
+    existsSync(OVERVIEW_SHOT) &&
+      existsSync(ACTIVITY_SHOT) &&
+      existsSync(CREDENTIALS_SHOT) &&
+      existsSync(SECURITY_SHOT),
+    `${OVERVIEW_SHOT} / ${ACTIVITY_SHOT} / ${CREDENTIALS_SHOT} / ${SECURITY_SHOT}`
   )
 
   // pageErrors 由 CDP 的 Log / Runtime 事件填充，不是页面里自报的变量 ——

@@ -12,6 +12,7 @@
  */
 
 import { app } from 'electron'
+import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -19,6 +20,7 @@ import { closeDatabase, getDatabaseInfo, initializeDatabase } from '../src/main/
 import { getSchemaVersion, migrate } from '../src/main/db/migrator'
 import * as repo from '../src/main/db/repositories'
 import * as cred from '../src/main/db/credentials'
+import * as security from '../src/main/db/security'
 import * as vault from '../src/main/security/vault'
 import { VaultError } from '../src/main/security/vault'
 import { applyEdits, entriesOf, parseEnv, serializeEnv } from '../src/main/env/document.ts'
@@ -170,6 +172,49 @@ function buildFixture(): void {
 
   mkdirSync(join(fixtureRoot, 'node_modules', 'pkg'), { recursive: true })
   writeFileSync(join(fixtureRoot, 'node_modules', 'pkg', '.env'), 'GHOST=1\n')
+
+  buildGitFixture()
+}
+
+/**
+ * 把样例项目做成一个**真的** Git 仓库（阶段 4a）。
+ *
+ * 安全检查这一层的价值全在真实 git 的行为上（`check-ignore --no-index` 到底
+ * 报不报已跟踪的文件、退出码 1 是什么意思）—— 拿假数据验等于验了个寂寞。
+ * 所以这里起真的 git，`inspectPaths` 也走真 runner。
+ *
+ * 布置出来的四种状态，覆盖判定表里最要紧的几条：
+ *
+ * ```
+ * .env.local                  已跟踪 + 已忽略 + 有 Key  → critical（最该报的那条）
+ * apps/web/.env.production    未跟踪 + 未忽略 + 有凭据串 → critical
+ * .env                        已跟踪 + 干净             → ok（不喊狼来了）
+ * .env.example                已跟踪 + 模板 + 干净       → ok，且它是未纳管文件
+ * ```
+ *
+ * `.env.local` 用 `git add -f` 强行入库，模拟真实世界里最常见的顺序：
+ * **先提交了，后来才想起来加进 .gitignore** —— 加完之后 git status 变干净，
+ * 于是所有人都以为堵上了，而那把 Key 还在仓库里。
+ */
+function buildGitFixture(): void {
+  writeFileSync(
+    join(fixtureRoot, '.gitignore'),
+    ['# 本机覆盖不进仓库', '.env.local', ''].join('\n')
+  )
+
+  // -c 传身份而不是依赖机器上的全局配置：验收要在任何机器上结果一致。
+  const git = (...args: string[]): void => {
+    execFileSync('git', ['-c', 'user.name=verify', '-c', 'user.email=verify@example.com', ...args], {
+      cwd: fixtureRoot,
+      stdio: 'ignore'
+    })
+  }
+
+  git('init', '-b', 'main')
+  git('add', '.env', '.env.example', '.gitignore')
+  // -f 才加得进去：它已经被 .gitignore 挡着了。这一步就是在造那个「假安心」。
+  git('add', '-f', '.env.local')
+  git('commit', '-m', 'fixture')
 }
 
 async function run(): Promise<void> {
@@ -378,6 +423,124 @@ async function run(): Promise<void> {
   // --- 文件健康度 -----------------------------------------------------------
   const files = repo.listFiles(project.id)
   check('刚导入时所有文件都一致', files.every((f) => !f.drifted), `${files.length} 个文件`)
+
+  // 阶段 4a：Git 风险检查
+  // -------------------------------------------------------------------------
+  //
+  // 这一段跑的是**真的 git**（`buildGitFixture` 起了一个真仓库）。假 runner
+  // 只能验解析，验不了 `check-ignore --no-index` 到底报不报已跟踪的文件 ——
+  // 而整个功能最有价值的那条结论正好压在这个行为上。
+  //
+  // ⚠️ 位置很讲究：必须在**任何东西改动样例文件之前**跑。
+  // 放到脚本末尾的话，.env 已经被「以磁盘为准」那一步写进了一把 Key、
+  // .env.staging 也还留着给界面验收用 —— 断言测的就成了一堆残留状态，
+  // 而不是这里刻意布置的那四种。（第一版就是这么写的，三条断言当场变红。）
+
+  const report = await security.scanSecurity(project.id)
+  const riskOf = (path: string) => report.files.find((file) => file.relativePath === path)
+
+  // 🔴 git 不可用时要**响亮地失败**，不能静默跳过下面这一组。
+  // 跳过的断言和通过的断言在报告上长得一模一样（HANDOFF §8）。
+  check(
+    'git 可用，下面这一组才有意义',
+    report.gitUnavailable === null && report.gitRoot !== null,
+    report.gitUnavailable ?? `gitRoot=${report.gitRoot}`
+  )
+
+  check(
+    '报告覆盖磁盘上全部 .env*，含未纳管的那个',
+    report.files.length === 4 &&
+      riskOf('.env.example')?.managed === false &&
+      riskOf('.env.local')?.managed === true,
+    report.files.map((f) => `${f.relativePath}(${f.level})`).join(' / ')
+  )
+
+  // --- 🔴 最该报出来的那条：已经在 .gitignore 里，但仍然被跟踪着 -------------
+  const leaked = riskOf('.env.local')
+  check(
+    '🔴 已提交又补进 .gitignore 的文件被判为 critical',
+    leaked?.level === 'critical' && leaked.tracked === true && leaked.ignored === true,
+    `level=${leaked?.level} tracked=${leaked?.tracked} ignored=${leaked?.ignored}`
+  )
+  check(
+    '🔴 并且说清楚了忽略规则对已跟踪的文件无效',
+    leaked?.reason.includes('忽略规则对已跟踪的文件无效') === true,
+    leaked?.reason ?? '（没有理由）'
+  )
+  check(
+    '🔴 处置办法给的是 git rm --cached，不是「加进 .gitignore」',
+    // 后者正是用户已经做过、并且以为已经解决了的事。
+    leaked?.remedy?.includes('git rm --cached') === true &&
+      leaked.remedy.includes('历史') &&
+      !leaked.remedy.startsWith('把'),
+    leaked?.remedy ?? '（没有处置办法）'
+  )
+  check(
+    '命中的忽略规则被指了出来',
+    leaked?.ignoreRule?.startsWith('.gitignore:') === true,
+    leaked?.ignoreRule ?? '（没有规则）'
+  )
+
+  // --- 还没进仓库，但也没人拦着 ---------------------------------------------
+  const exposed = riskOf('apps/web/.env.production')
+  check(
+    '🔴 未被忽略且含凭据串的文件被判为 critical',
+    exposed?.level === 'critical' && exposed.tracked === false && exposed.ignored === false,
+    `level=${exposed?.level} tracked=${exposed?.tracked} ignored=${exposed?.ignored}`
+  )
+  check(
+    '它的处置办法是加进 .gitignore（这个文件还没进仓库，不用 rm --cached）',
+    exposed?.remedy?.includes('.gitignore') === true &&
+      exposed.remedy.includes('git rm') === false,
+    exposed?.remedy ?? '（没有处置办法）'
+  )
+
+  // --- 🔴 不喊狼来了 --------------------------------------------------------
+  // 每个项目都把干净文件标红的安全页，用户看两次就再也不看了 ——
+  // 之后真出事那次他也不会看。
+  check(
+    '🔴 被跟踪但不含敏感值的文件是 ok，不报警',
+    riskOf('.env')?.level === 'ok' && riskOf('.env')?.tracked === true,
+    `.env level=${riskOf('.env')?.level} tracked=${riskOf('.env')?.tracked}`
+  )
+  check(
+    '🔴 被跟踪的干净模板同样是 ok',
+    riskOf('.env.example')?.level === 'ok' && riskOf('.env.example')?.tracked === true,
+    `.env.example level=${riskOf('.env.example')?.level}`
+  )
+
+  check(
+    '摘要计数和逐条结论对得上',
+    report.summary.critical === report.files.filter((f) => f.level === 'critical').length &&
+      report.summary.critical === 2 &&
+      report.summary.ok === 2,
+    `critical=${report.summary.critical} warning=${report.summary.warning} unknown=${report.summary.unknown} ok=${report.summary.ok}`
+  )
+
+  // --- 🔴 报告里只有计数，没有值 --------------------------------------------
+  // 针串在这里自带一份，不复用后面凭据段落的 NEEDLES ——
+  // 那些常量定义在这一段**之后**，引用过来会直接 TDZ 报错。
+  // 一个只在段落内有效的列表也更好读：它列的正好是此刻磁盘上的那几把假 Key。
+  const reportJson = JSON.stringify(report)
+  const leakedInReport = [
+    'sk-proj-abcdefghijklmnopqrstuvwxyz012345',
+    'sk-ant-api03-fixture-0123456789abcdef',
+    'pa#ss word',
+    'user:secret',
+    'line1'
+  ].filter((needle) => reportJson.includes(needle))
+  check(
+    '🔴 安全报告里搜不到任何配置值，只有计数',
+    leakedInReport.length === 0,
+    leakedInReport.length === 0
+      ? `high=${leaked?.highCount} sensitive=${leaked?.sensitiveCount}`
+      : `命中: ${leakedInReport.join(', ')}`
+  )
+  check(
+    '🔴 但它确实数到了那些敏感值 —— 上一条才有意义',
+    (leaked?.highCount ?? 0) > 0,
+    `.env.local 高危 ${leaked?.highCount} 个、疑似敏感 ${leaked?.sensitiveCount} 个`
+  )
 
   // --- 外部修改与重扫 -------------------------------------------------------
   const localPath = join(fixtureRoot, '.env.local')
@@ -1487,6 +1650,18 @@ async function run(): Promise<void> {
 
   // --- Vault 锁定后读不到值 -------------------------------------------------
   vault.lock()
+
+  // 🔴 安全检查不需要解锁：敏感度那一列本来就不加密，全程不解密任何东西。
+  // 这恰恰是它最该能用的时候之一 —— 你不需要打开保险柜，
+  // 才能知道保险柜有没有被拍照传到 GitHub 上。
+  const lockedReport = await security.scanSecurity(project.id)
+  check(
+    '🔴 Vault 锁着时安全检查照样出结论',
+    lockedReport.files.length > 0 &&
+      lockedReport.gitUnavailable === null &&
+      lockedReport.files.find((f) => f.relativePath === '.env.local')?.level === 'critical',
+    `锁定后列出 ${lockedReport.files.length} 个文件，.env.local=${lockedReport.files.find((f) => f.relativePath === '.env.local')?.level}`
+  )
   let listBlocked = ''
   try {
     repo.listEntries({ projectId: project.id })
