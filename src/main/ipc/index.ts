@@ -11,6 +11,8 @@
  */
 
 import { BrowserWindow, app, dialog, ipcMain, type IpcMainInvokeEvent } from 'electron'
+import { readFileSync, writeFileSync } from 'node:fs'
+import { isAbsolute } from 'node:path'
 import {
   CHANNELS,
   type ChannelName,
@@ -26,6 +28,8 @@ import * as repo from '../db/repositories'
 import * as credentials from '../db/credentials'
 import * as security from '../db/security'
 import * as template from '../db/template'
+import * as transfer from '../db/transfer'
+import { PackageError, inspectPackage, openPackage, sealPackage } from '../transfer/package.ts'
 import { electronClipboard } from '../clipboard/port'
 import { RepositoryError } from '../db/repositories'
 import * as vault from '../security/vault'
@@ -55,6 +59,9 @@ function fail(code: IpcErrorCode, message: string): IpcResult<never> {
 function toFailure(error: unknown): IpcResult<never> {
   if (error instanceof VaultError) return fail(error.code, error.message)
   if (error instanceof RepositoryError) return fail(error.code, error.message)
+  // 包错误的 message 是我们自己写的、面向用户的（「口令不对，或者这个文件已经损坏」），
+  // 可以原样透出去。🔴 它里面不含口令、不含路径 —— 加新 message 时守住这条。
+  if (error instanceof PackageError) return fail('INVALID_ARGUMENT', error.message)
   // 不把原始 message 透出去：它可能包含内部路径或 SQL 片段。
   console.error('[ipc] 未处理的异常', error)
   return fail('INTERNAL', '操作失败，请查看应用日志')
@@ -129,6 +136,47 @@ function asStringArray(value: unknown, field: string): string[] {
     throw new RepositoryError('INTERNAL', `参数 ${field} 必须是数组`)
   }
   return value.filter((item): item is string => typeof item === 'string')
+}
+
+function asPositiveIntArray(value: unknown, field: string): number[] {
+  if (!Array.isArray(value)) {
+    throw new RepositoryError('INVALID_ARGUMENT', `参数 ${field} 必须是数组`)
+  }
+  return value.map((item) => asPositiveInt(item, `${field}[]`))
+}
+
+/**
+ * 导出/导入口令。
+ *
+ * 🔴 这个函数**绝不能**把口令拼进任何错误信息里 —— `toFailure` 兜底那条
+ * `console.error` 是全应用唯一会把原始异常整个打印出来的地方，
+ * 而这里手上拿着的正是口令本身。上限 1024 是防一个几 MB 的串把 scrypt 拖死。
+ */
+function asPassphrase(value: unknown): string {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new RepositoryError('INVALID_ARGUMENT', '口令不能为空')
+  }
+  if (value.length > 1024) {
+    throw new RepositoryError('INVALID_ARGUMENT', '口令过长')
+  }
+  return value
+}
+
+/**
+ * 导入包的路径。
+ *
+ * 🔴 只接受**由 `transfer:pickPackage` 那个对话框给出来的**那种绝对路径。
+ * 这里不做目录白名单（用户本来就可以把包放在任何地方），但要挡住空值和
+ * 相对路径 —— 相对路径会相对主进程的 cwd 解析，那是个用户完全预期不到的位置。
+ */
+function asPackagePath(value: unknown): string {
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw new RepositoryError('INVALID_ARGUMENT', '没有指定导出包的位置')
+  }
+  if (!isAbsolute(value)) {
+    throw new RepositoryError('PATH_REJECTED', '导出包必须用绝对路径指定')
+  }
+  return value
 }
 
 /**
@@ -544,6 +592,90 @@ export function registerIpcHandlers(): void {
     )
     // 生成会在磁盘上造出/改掉一个 .env* 文件。它通常不纳管（模板默认不勾选），
     // 但用户勾过就会纳管 —— 那时不刷新就是拿旧哈希去比新文件，静默失效。
+    void refreshWatchTargets()
+    return result
+  })
+
+  // --- 加密导出 / 导入（阶段 5c）---------------------------------------------
+
+  handle(CHANNELS.transferExportPreview, () => transfer.previewExport())
+
+  handle(CHANNELS.transferExport, async (request, event) => {
+    const body = asRecord(request)
+    const projectIds = asPositiveIntArray(body.projectIds, 'projectIds')
+    const includeCredentials = body.includeCredentials === true
+    const passphrase = asPassphrase(body.passphrase)
+
+    // 先收集再问路径：收集会因为 Vault 锁着而失败，那时候不该已经弹过对话框。
+    const payload = transfer.buildPayload(projectIds, includeCredentials)
+
+    const window = BrowserWindow.fromWebContents(event.sender)
+    const picked = await dialog.showSaveDialog(window ?? BrowserWindow.getAllWindows()[0]!, {
+      title: '保存加密导出包',
+      defaultPath: `envvault-${new Date().toISOString().slice(0, 10)}.evpkg`,
+      filters: [{ name: 'EnvVault 导出包', extensions: ['evpkg'] }]
+    })
+    if (picked.canceled || !picked.filePath) return null
+
+    const blob = sealPackage(JSON.stringify(payload), passphrase)
+    writeFileSync(picked.filePath, blob, { mode: 0o600 })
+
+    const entryCount = payload.projects.reduce(
+      (sum, project) => sum + project.files.reduce((n, file) => n + file.entries.length, 0),
+      0
+    )
+    transfer.logExport(
+      payload.projects.length,
+      entryCount,
+      payload.credentials.length,
+      picked.filePath
+    )
+
+    return {
+      targetPath: picked.filePath,
+      projectCount: payload.projects.length,
+      entryCount,
+      credentialCount: payload.credentials.length,
+      bytesWritten: blob.length
+    }
+  })
+
+  handle(CHANNELS.transferPickPackage, async (_request, event) => {
+    const window = BrowserWindow.fromWebContents(event.sender)
+    const picked = await dialog.showOpenDialog(window ?? BrowserWindow.getAllWindows()[0]!, {
+      title: '选择要导入的加密导出包',
+      properties: ['openFile'],
+      filters: [{ name: 'EnvVault 导出包', extensions: ['evpkg'] }]
+    })
+    const sourcePath = picked.filePaths[0]
+    if (picked.canceled || !sourcePath) return null
+
+    // 只读包头就能识别。在问口令**之前**说"这不是个导出包"，
+    // 比让用户输完一遍口令再告诉他要好。
+    const header = inspectPackage(readFileSync(sourcePath))
+    return { sourcePath, version: header.version }
+  })
+
+  handle(CHANNELS.transferImportPreview, (request) => {
+    const body = asRecord(request)
+    const json = openPackage(
+      readFileSync(asPackagePath(body.sourcePath)),
+      asPassphrase(body.passphrase)
+    )
+    return transfer.previewImport(json)
+  })
+
+  handle(CHANNELS.transferImport, (request) => {
+    const body = asRecord(request)
+    const json = openPackage(
+      readFileSync(asPackagePath(body.sourcePath)),
+      asPassphrase(body.passphrase)
+    )
+    const result = transfer.applyImport(json, {
+      fileKeys: asStringArray(body.fileKeys, 'fileKeys'),
+      credentialNames: asStringArray(body.credentialNames, 'credentialNames')
+    })
+    // 导入会新增 env_files 行，监听集合跟着变（HANDOFF §5 那一组，现在是十处）。
     void refreshWatchTargets()
     return result
   })

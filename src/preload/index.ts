@@ -46,6 +46,10 @@ import {
   type RevealResult,
   type ScanPreview,
   type SecurityReport,
+  type ExportPreview,
+  type ExportResult,
+  type ImportPreview,
+  type ImportResult,
   type SelectDirectoryRequest,
   type SelectDirectoryResult,
   type TemplatePreview,
@@ -182,6 +186,31 @@ const api: EnvVaultApi = {
     ipcRenderer.invoke(CHANNELS.templateWrite, { fileId, expectedTargetHash }) as Promise<
       IpcResult<TemplateWriteResult>
     >,
+
+  // --- 加密导出 / 导入（阶段 5c）---
+  // 🔴 口令走的是渲染层 → 主进程方向。这和「明文出主进程」是反方向：
+  // 用户在界面上敲它，主进程拿它派生密钥，它不会从任何一个通道回来。
+  previewExport: () =>
+    ipcRenderer.invoke(CHANNELS.transferExportPreview) as Promise<IpcResult<ExportPreview>>,
+  exportPackage: (request: {
+    projectIds: number[]
+    includeCredentials: boolean
+    passphrase: string
+  }) => ipcRenderer.invoke(CHANNELS.transferExport, request) as Promise<IpcResult<ExportResult | null>>,
+  pickPackage: () =>
+    ipcRenderer.invoke(CHANNELS.transferPickPackage) as Promise<
+      IpcResult<{ sourcePath: string; version: number } | null>
+    >,
+  previewImport: (sourcePath: string, passphrase: string) =>
+    ipcRenderer.invoke(CHANNELS.transferImportPreview, { sourcePath, passphrase }) as Promise<
+      IpcResult<ImportPreview>
+    >,
+  importPackage: (request: {
+    sourcePath: string
+    passphrase: string
+    fileKeys: string[]
+    credentialNames: string[]
+  }) => ipcRenderer.invoke(CHANNELS.transferImport, request) as Promise<IpcResult<ImportResult>>,
 
   onFilesChanged: (handler: (events: FileChangedEvent[]) => void) => {
     // 包一层，不把 Electron 的 IpcRendererEvent 透给渲染层 ——

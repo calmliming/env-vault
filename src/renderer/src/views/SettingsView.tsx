@@ -16,6 +16,8 @@ interface SettingsViewProps {
   vaultBusy: boolean
   onRefresh(): void
   onVaultAction(): void
+  onOpenExport(): void
+  onOpenImport(): void
 }
 
 export function SettingsView({
@@ -24,7 +26,9 @@ export function SettingsView({
   loading,
   vaultBusy,
   onRefresh,
-  onVaultAction
+  onVaultAction,
+  onOpenExport,
+  onOpenImport
 }: SettingsViewProps): ReactNode {
   return (
     <section>
@@ -49,6 +53,30 @@ export function SettingsView({
           <p>{error}</p>
         </div>
       )}
+
+      {/*
+        导出/导入放这里而不是项目页：它们是应用级动作（跨项目、还可能带上凭据），
+        挂在某个项目的页面上会暗示"只导这一个"，而那不是它的语义。
+      */}
+      <section className="panel transfer-panel">
+        <div className="panel-head">
+          <div>
+            <div className="panel-title">备份与迁移</div>
+            <div className="panel-sub">
+              导出是这个应用最宽的一条明文出口：一次带走选中项目的全部值。
+              包用你设的口令加密，口令不保存在任何地方。
+            </div>
+          </div>
+          <div className="head-actions">
+            <button className="outline-btn" onClick={onOpenImport}>
+              从导出包导入
+            </button>
+            <button className="outline-btn" onClick={onOpenExport} data-action="export">
+              加密导出…
+            </button>
+          </div>
+        </div>
+      </section>
 
       {health && (
         <div className="status-grid">

@@ -16,6 +16,8 @@ import { ProjectModal } from './modals/ProjectModal'
 import { SearchModal } from './modals/SearchModal'
 import { SyncModal } from './modals/SyncModal'
 import { TemplateModal } from './modals/TemplateModal'
+import { ExportModal } from './modals/ExportModal'
+import { ImportModal } from './modals/ImportModal'
 import { ModalProvider, useModal } from './state/modal'
 import { ToastProvider, useToast } from './state/toast'
 import { CredentialsView } from './views/CredentialsView'
@@ -279,6 +281,32 @@ function Workspace(): ReactNode {
     })
   }, [openModal, showToast, workspace])
 
+  const openExport = useCallback(() => {
+    openModal({
+      kicker: '备份与迁移',
+      title: '加密导出',
+      render: ({ close }) => <ExportModal close={close} showToast={showToast} />
+    })
+  }, [openModal, showToast])
+
+  const openImport = useCallback(() => {
+    openModal({
+      kicker: '备份与迁移',
+      title: '从导出包导入',
+      render: ({ close }) => (
+        <ImportModal
+          close={close}
+          showToast={showToast}
+          onImported={() => {
+            // 导入会新增项目/文件/变量，整个工作台的数据都可能变了。
+            void workspace.reloadProjects(workspace.selectedProject?.id)
+            void workspace.reloadCurrent()
+          }}
+        />
+      )
+    })
+  }, [openModal, showToast, workspace])
+
   const openSearch = useCallback(() => {
     openModal({
       kicker: '快速定位',
@@ -382,6 +410,8 @@ function Workspace(): ReactNode {
               vaultBusy={vaultBusy}
               onRefresh={() => void refresh()}
               onVaultAction={() => void runVaultAction()}
+              onOpenExport={openExport}
+              onOpenImport={openImport}
             />
           )}
         </div>

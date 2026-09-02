@@ -53,6 +53,11 @@ export const CHANNELS = {
   filesRestore: 'files:restore',
   templatePreview: 'template:preview',
   templateWrite: 'template:write',
+  transferExportPreview: 'transfer:exportPreview',
+  transferExport: 'transfer:export',
+  transferPickPackage: 'transfer:pickPackage',
+  transferImportPreview: 'transfer:importPreview',
+  transferImport: 'transfer:import',
   activityList: 'activity:list'
 } as const
 
@@ -672,6 +677,80 @@ export interface TemplateWriteResult {
 }
 
 // ---------------------------------------------------------------------------
+// 加密导出 / 导入（阶段 5c）
+// ---------------------------------------------------------------------------
+
+export interface ExportPreviewProject {
+  projectId: number
+  name: string
+  absolutePath: string
+  fileCount: number
+  entryCount: number
+}
+
+export interface ExportPreview {
+  projects: ExportPreviewProject[]
+  /** 库里有多少条模型凭据。界面据此决定要不要显示那个默认不勾的开关。 */
+  credentialCount: number
+}
+
+export interface ExportResult {
+  targetPath: string
+  projectCount: number
+  entryCount: number
+  credentialCount: number
+  bytesWritten: number
+}
+
+export interface ImportPreviewFile {
+  relativePath: string
+  environment: string
+  /** 本机中心记录里已经有这个文件了，还是全新的。 */
+  status: 'new' | 'existing'
+  /** 包里有、本机没有的变量数。 */
+  addedCount: number
+  /** 两边都有但值不同的变量数。 */
+  changedCount: number
+  /** 两边都有且值相同的变量数。 */
+  sameCount: number
+  /** 目标路径当前在磁盘上存在。导入不写磁盘，这只是给用户的一个事实。 */
+  onDisk: boolean
+}
+
+export interface ImportPreviewProject {
+  name: string
+  /** 导出那台机器上的绝对路径。 */
+  absolutePath: string
+  status: 'new' | 'existing'
+  /** 这个路径在**本机**存在吗。换机器导入时通常不存在。 */
+  rootExistsOnDisk: boolean
+  files: ImportPreviewFile[]
+}
+
+export interface ImportPreviewCredential {
+  providerName: string
+  credentialName: string
+  /** 🔴 只给尾四位，不给 Key —— 和凭据列表同一条规矩。 */
+  lastFour: string
+  bindingCount: number
+  status: 'new' | 'existing'
+}
+
+export interface ImportPreview {
+  exportedAt: number
+  projects: ImportPreviewProject[]
+  credentials: ImportPreviewCredential[]
+}
+
+export interface ImportResult {
+  projectsCreated: number
+  filesCreated: number
+  entriesAdded: number
+  entriesUpdated: number
+  credentialsCreated: number
+}
+
+// ---------------------------------------------------------------------------
 // 通道签名
 // ---------------------------------------------------------------------------
 
@@ -797,6 +876,50 @@ export interface IpcContract {
     request: { fileId: number; expectedTargetHash: string | null }
     response: TemplateWriteResult
   }
+  [CHANNELS.transferExportPreview]: { request: void; response: ExportPreview }
+  /**
+   * 🔴 全应用**最宽的一条明文出口**：一次把选中项目的全部值（可能还有全部模型
+   * Key）写成一个文件。所以它必须带口令，而且没有"不加密"这个选项。
+   *
+   * `passphrase` 是**渲染层 → 主进程**方向的秘密，和明文出主进程是反方向：
+   * 用户在界面上输入它，主进程拿它派生密钥，它不进返回值、不进操作记录、
+   * 不进任何日志。
+   */
+  [CHANNELS.transferExport]: {
+    request: {
+      projectIds: number[]
+      includeCredentials: boolean
+      passphrase: string
+    }
+    /** null 表示用户在保存对话框里取消了。保存对话框由主进程弹，见 ipc/index.ts。 */
+    response: ExportResult | null
+  }
+  /**
+   * 选一个导出包。刻意是**专用**通道而不是通用的「打开任意文件」——
+   * 后者会给渲染层一个能读任意路径的口子，而白名单的意义就在于每个口都窄。
+   * 它顺带只读包头做一次识别，好在问口令**之前**就能说"这不是个导出包"。
+   */
+  [CHANNELS.transferPickPackage]: {
+    request: void
+    response: { sourcePath: string; version: number } | null
+  }
+  [CHANNELS.transferImportPreview]: {
+    request: { sourcePath: string; passphrase: string }
+    response: ImportPreview
+  }
+  /**
+   * 🔴 导入**只写中心记录，不碰磁盘上的 .env**。要把值落到文件，走既有的
+   * 「以记录为准写回」—— 那条路自带备份、并发校验和逐变量确认。
+   */
+  [CHANNELS.transferImport]: {
+    request: {
+      sourcePath: string
+      passphrase: string
+      fileKeys: string[]
+      credentialNames: string[]
+    }
+    response: ImportResult
+  }
   [CHANNELS.activityList]: { request: { limit?: number }; response: ActivityRecord[] }
 }
 
@@ -914,6 +1037,28 @@ export interface EnvVaultApi {
     fileId: number,
     expectedTargetHash: string | null
   ): Promise<IpcResult<TemplateWriteResult>>
+
+  // --- 加密导出 / 导入（阶段 5c）---
+  previewExport(): Promise<IpcResult<ExportPreview>>
+  /**
+   * 🔴 最宽的一条明文出口。口令是渲染层 → 主进程方向的秘密，
+   * 不进返回值、不进操作记录、不进日志。保存位置由主进程弹对话框选，
+   * 返回 null 表示用户取消了。
+   */
+  exportPackage(request: {
+    projectIds: number[]
+    includeCredentials: boolean
+    passphrase: string
+  }): Promise<IpcResult<ExportResult | null>>
+  pickPackage(): Promise<IpcResult<{ sourcePath: string; version: number } | null>>
+  previewImport(sourcePath: string, passphrase: string): Promise<IpcResult<ImportPreview>>
+  /** 🔴 只写中心记录，不碰磁盘上的 .env。 */
+  importPackage(request: {
+    sourcePath: string
+    passphrase: string
+    fileKeys: string[]
+    credentialNames: string[]
+  }): Promise<IpcResult<ImportResult>>
 
   listActivity(limit?: number): Promise<IpcResult<ActivityRecord[]>>
   /**

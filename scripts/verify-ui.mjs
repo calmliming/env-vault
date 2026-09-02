@@ -159,9 +159,10 @@ async function runChecks() {
     'preload 只暴露白名单方法',
     // 阶段 3 收尾 +validateCredential（33→34）、4a +scanSecurity（→35）、
     // 4b +listCredentialVersions/copyEntryValue/copyCredentialKey（→38）、
-    // 5b +previewTemplate/writeTemplate（→40）。
+    // 5b +previewTemplate/writeTemplate（→40）、
+    // 5c +previewExport/exportPackage/pickPackage/previewImport/importPackage（→45）。
     // 数字写死是有意的：桥上多一个方法就红一次，逼人过一眼那是不是该暴露的东西。
-    isolation.bridgeType === 'object' && isolation.bridgeKeys.length === 40,
+    isolation.bridgeType === 'object' && isolation.bridgeKeys.length === 45,
     `${isolation.bridgeKeys.length} 个：${isolation.bridgeKeys.join(', ')}`
   )
 
@@ -1292,6 +1293,12 @@ async function runChecks() {
       '（记录里找不到生成动作）'
   )
   check(
+    '🔴 导出与导入都留了痕（导出是最宽的一条明文出口）',
+    activity.labels.includes('加密导出') && activity.labels.includes('从导出包导入'),
+    [...new Set(activity.labels)].filter((l) => l.includes('导出') || l.includes('导入')).join('、') ||
+      '（记录里找不到导出/导入动作）'
+  )
+  check(
     '🔴 操作记录页面不含任何明文值（§5.5）',
     activity.bodyHasSecret === false,
     `包含明文=${activity.bodyHasSecret}`
@@ -1499,6 +1506,88 @@ async function runChecks() {
     afterWrite.includes(TEMPLATE_SENTINEL.trim())
       ? '哨兵还在 —— 界面根本没写成功'
       : `${afterWrite.length} 字节，哨兵已被覆盖`
+  )
+
+  // --- 加密导出弹窗（阶段 5c）------------------------------------------------
+  //
+  // ⚠️ 这里**不点确认**：导出会弹一个原生保存对话框，CDP 点不掉它，
+  // 整个验收会挂在那儿等到超时。往返、口令、不落明文这些在 verify:core 里
+  // 已经逐条验过了；界面这一关只验「按下去之前」的那些守卫。
+  const exportModal = await evaluate(`(async () => {
+    const wait = (ms) => new Promise(r => setTimeout(r, ms));
+    [...document.querySelectorAll('.nav button')].find(b => b.textContent.includes('设置')).click();
+    await wait(300);
+    document.querySelector('.transfer-panel button[data-action="export"]')?.click();
+    for (let i = 0; i < 30; i++) {
+      await wait(100);
+      if (document.querySelector('#export-passphrase')) break;
+    }
+
+    const confirm = () => document.querySelector('[data-testid="export-confirm"]');
+    const rows = [...document.querySelectorAll('.modal-body .diff-row input')];
+    const disabledAtStart = confirm()?.disabled ?? null;
+
+    // 勾一个项目，但先不填口令 —— 按钮必须还是禁用的。
+    rows[0]?.click();
+    await wait(120);
+    const disabledWithoutPassphrase = confirm()?.disabled ?? null;
+
+    const setValue = (el, v) => {
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(el, v);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    setValue(document.querySelector('#export-passphrase'), 'passphrase-one');
+    setValue(document.querySelector('#export-passphrase-confirm'), 'passphrase-two');
+    await wait(120);
+    const disabledOnMismatch = confirm()?.disabled ?? null;
+
+    setValue(document.querySelector('#export-passphrase-confirm'), 'passphrase-one');
+    await wait(120);
+    const enabledWhenReady = confirm()?.disabled === false;
+
+    const bodyText = document.querySelector('.modal-body')?.innerText ?? '';
+    const result = {
+      title: document.querySelector('#modal-title')?.textContent ?? '',
+      projectRows: rows.length,
+      disabledAtStart, disabledWithoutPassphrase, disabledOnMismatch, enabledWhenReady,
+      mentionsIrreversible: bodyText.includes('忘了就打不开'),
+      bodyHasSecret: bodyText.includes(${JSON.stringify(FIXTURE_SECRET)})
+    };
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await wait(200);
+    return result;
+  })()`, true)
+
+  check('加密导出弹窗能打开并列出项目', exportModal.title === '加密导出' && exportModal.projectRows > 0, `${exportModal.title} / ${exportModal.projectRows} 个项目`)
+  check(
+    '🔴 一个项目都没勾时不给导出',
+    exportModal.disabledAtStart === true,
+    `disabled=${exportModal.disabledAtStart}`
+  )
+  check(
+    '🔴 没填口令时不给导出 —— 不存在"不加密导出"这条路',
+    exportModal.disabledWithoutPassphrase === true,
+    `disabled=${exportModal.disabledWithoutPassphrase}`
+  )
+  check(
+    '🔴 两次口令不一致时不给导出',
+    exportModal.disabledOnMismatch === true,
+    `disabled=${exportModal.disabledOnMismatch}`
+  )
+  check(
+    '勾了项目且两次口令一致后才放行 —— 上面三条才有意义',
+    exportModal.enabledWhenReady === true,
+    `enabled=${exportModal.enabledWhenReady}`
+  )
+  check(
+    '直说了口令丢了就打不开，没有找回途径',
+    exportModal.mentionsIrreversible === true,
+    `含提示=${exportModal.mentionsIrreversible}`
+  )
+  check(
+    '🔴 导出弹窗里不含任何明文值',
+    exportModal.bodyHasSecret === false,
+    `包含明文=${exportModal.bodyHasSecret}`
   )
 
   check(

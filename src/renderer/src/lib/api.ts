@@ -89,6 +89,23 @@ export const bridge = {
   writeTemplate: (fileId: number, expectedTargetHash: string | null) =>
     call(() => window.envvault.writeTemplate(fileId, expectedTargetHash)),
 
+  // --- 加密导出 / 导入（阶段 5c）---
+  previewExport: () => call(() => window.envvault.previewExport()),
+  exportPackage: (request: {
+    projectIds: number[]
+    includeCredentials: boolean
+    passphrase: string
+  }) => call(() => window.envvault.exportPackage(request)),
+  pickPackage: () => call(() => window.envvault.pickPackage()),
+  previewImport: (sourcePath: string, passphrase: string) =>
+    call(() => window.envvault.previewImport(sourcePath, passphrase)),
+  importPackage: (request: {
+    sourcePath: string
+    passphrase: string
+    fileKeys: string[]
+    credentialNames: string[]
+  }) => call(() => window.envvault.importPackage(request)),
+
   // --- 模型凭据（阶段 3）---
   listCredentials: () => call(() => window.envvault.listCredentials()),
   listProviders: () => call(() => window.envvault.listProviders()),

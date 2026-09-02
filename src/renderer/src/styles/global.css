@@ -667,6 +667,12 @@ h1 { font-size: 35px; letter-spacing: 0; line-height: 1.05; margin: 8px 0 9px; }
 /* 长行横向滚动关在自己这一格里，别把窗口级零滚动条那条链弄破（global 顶部那段注释）。 */
 .template-preview-body { margin: 0; padding: 12px; max-height: 260px; overflow: auto; font: 11px/1.65 var(--mono); color: var(--ink); white-space: pre; }
 
+/* 备份与迁移（阶段 5c） */
+.transfer-panel { margin-bottom: 18px; }
+.transfer-project { margin-bottom: 16px; }
+.transfer-project-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 3px; }
+.transfer-project-path { color: var(--muted); font: 10px var(--mono); margin-bottom: 8px; overflow-wrap: anywhere; }
+
 .diff-list { border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
 .diff-row { display: grid; grid-template-columns: 22px 1fr auto; align-items: center; gap: 9px; padding: 11px 12px; border-bottom: 1px solid #eeeae3; }
 .diff-row:last-child { border-bottom: 0; }

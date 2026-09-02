@@ -24,6 +24,8 @@ import * as cred from '../src/main/db/credentials'
 import * as security from '../src/main/db/security'
 import * as inject from '../src/main/db/inject'
 import * as template from '../src/main/db/template'
+import * as transfer from '../src/main/db/transfer'
+import { openPackage, sealPackage } from '../src/main/transfer/package.ts'
 import * as vault from '../src/main/security/vault'
 import { VaultError } from '../src/main/security/vault'
 import { applyEdits, entriesOf, parseEnv, serializeEnv } from '../src/main/env/document.ts'
@@ -1978,6 +1980,198 @@ async function run(): Promise<void> {
   )
   repo.removeProject(leakProject.id)
   rmSync(leakRoot, { recursive: true, force: true })
+
+  // --- 🔴 加密导出：包里搜不到明文（阶段 5c）--------------------------------
+  const PASSPHRASE = 'a-long-enough-test-passphrase'
+
+  // 自己造一条凭据再导：跑到这一段时前面的凭据已经被「删除凭据」那节删光了，
+  // 指望共享样例数据的残留，这条断言会随着别处的改动悄悄变成"导出 0 条也算过"。
+  // 和阶段 3 单独加一个 ANTHROPIC_API_KEY 是同一个理由（§8）。
+  const TRANSFER_KEY = 'sk-ant-api03-transfer-0123456789abcdef'
+  const transferCredential = cred.createCredential({
+    providerId: 'anthropic',
+    credentialName: 'verify-transfer',
+    endpoint: 'https://api.anthropic.com/v1',
+    apiKey: TRANSFER_KEY
+  })
+
+  const payload = transfer.buildPayload([project.id], true)
+  // 用调低的 KDF 参数：验收脚本要跑得完，而「默认参数是 2^17」由单元测试守着。
+  const sealedPackage = sealPackage(JSON.stringify(payload), PASSPHRASE, { log2N: 10, r: 8, p: 1 })
+
+  // 针串里额外加上刚造的那把凭据 Key —— 它是这一段里唯一"因为勾了凭据才进包"的值。
+  const TRANSFER_NEEDLES = [...NEEDLES, TRANSFER_KEY]
+  const sealedLeaks = TRANSFER_NEEDLES.filter((needle) =>
+    sealedPackage.includes(Buffer.from(needle, 'utf8'))
+  )
+  check(
+    '🔴 加密包的字节里搜不到任何一把样例密钥',
+    sealedLeaks.length === 0,
+    sealedLeaks.length === 0 ? `${sealedPackage.length} 字节` : `命中: ${sealedLeaks.join(', ')}`
+  )
+  check(
+    '🔴 但明文 payload 里确实有它们 —— 上一条才有意义',
+    TRANSFER_NEEDLES.filter((needle) => JSON.stringify(payload).includes(needle)).length >= 3,
+    `明文 payload 里命中 ${TRANSFER_NEEDLES.filter((n) => JSON.stringify(payload).includes(n)).length} 条`
+  )
+  check(
+    '勾了凭据就真的带上了凭据的明文 Key',
+    payload.credentials.some((c) => c.apiKey === TRANSFER_KEY),
+    `${payload.credentials.length} 条凭据`
+  )
+  check(
+    '🔴 不勾凭据时包里一条凭据都没有',
+    transfer.buildPayload([project.id], false).credentials.length === 0,
+    '默认不勾，勾了才带'
+  )
+  check(
+    '🔴 包里不含凭据指纹 —— 它是本机主密钥派生的，换台机器没有意义',
+    !JSON.stringify(payload).includes('fingerprint'),
+    '只带 apiKey，指纹由导入方重算'
+  )
+
+  // 留痕由 IPC handler 调（写盘那一步在那儿），这里显式调一次 ——
+  // 否则界面验收那条「记录里的动作都是中文」永远盖不到 transfer.export，
+  // 而它恰恰是最该被审计的一条。
+  transfer.logExport(
+    payload.projects.length,
+    payload.projects.reduce((s, p) => s + p.files.reduce((n, f) => n + f.entries.length, 0), 0),
+    payload.credentials.length,
+    join(sandbox, 'verify.evpkg')
+  )
+
+  let wrongPassphrase = ''
+  try {
+    openPackage(sealedPackage, 'not-the-passphrase')
+  } catch (error) {
+    wrongPassphrase = error instanceof Error ? error.message : String(error)
+  }
+  check('🔴 口令不对就打不开', wrongPassphrase.includes('口令不对'), wrongPassphrase || '（居然打开了）')
+
+  // --- 往返保真：解开之后和库里逐条对得上 -----------------------------------
+  const reopened = openPackage(sealedPackage, PASSPHRASE)
+  const roundTrip = transfer.previewImport(reopened)
+  const rtFiles = roundTrip.projects.flatMap((p) => p.files)
+  check(
+    '🔴 原样导回来时，每个文件都是「已存在且全部相同」—— 往返没丢也没改',
+    rtFiles.length > 0 &&
+      rtFiles.every((f) => f.status === 'existing' && f.addedCount === 0 && f.changedCount === 0),
+    rtFiles.map((f) => `${f.relativePath}(+${f.addedCount}/~${f.changedCount}/=${f.sameCount})`).join(' ')
+  )
+
+  // --- 🔴 导入不碰磁盘 -------------------------------------------------------
+  /** 文件不存在时给一个固定串，好让"消失了"和"内容变了"都能被下面那条比出来。 */
+  const hashOf = (path: string): string =>
+    existsSync(path) ? createHash('sha256').update(readFileSync(path)).digest('hex') : '(缺失)'
+
+  const allFileKeys = rtFiles.map((f) =>
+    transfer.fileKeyOf(roundTrip.projects[0]!.absolutePath, f.relativePath)
+  )
+
+  check(
+    '把同一个包原样再导一遍是空操作',
+    (() => {
+      const noop = transfer.applyImport(reopened, { fileKeys: allFileKeys, credentialNames: [] })
+      return noop.entriesAdded === 0 && noop.entriesUpdated === 0
+    })(),
+    '包和库一致时不产生任何写入'
+  )
+
+  // 🔴 下面这条「磁盘没变」如果只跟着上面那次**空操作**跑，它是空过的 ——
+  // 什么都没导，磁盘当然不会变。所以先把中心记录里一个值改掉，
+  // 让这次导入**真的有事可做**，再看磁盘动没动。
+  const victim = repo
+    .listEntries({ projectId: project.id })
+    .find((entry) => entry.key === 'LOG_LEVEL')!
+  // 🔴 原值现读，不写死：前面「重扫」那节已经把 LOG_LEVEL 从 debug 改成 info 了，
+  // 照初始 fixture 写一个字面量，这条断言会随着别处的改动悄悄失真（§8）。
+  const victimOriginal = repo.revealEntry(victim.id).value
+  db.prepare('UPDATE config_entries SET encrypted_value = ? WHERE id = ?').run(
+    vault.encryptValue('tampered-by-verify'),
+    victim.id
+  )
+
+  const watchedPaths = repo.listFiles(project.id).map((f) => join(fixtureRoot, f.relativePath))
+  const hashesBefore = watchedPaths.map((p) => `${p}=${hashOf(p)}`)
+  const restoring = transfer.applyImport(reopened, {
+    fileKeys: allFileKeys,
+    credentialNames: []
+  })
+  const hashesAfter = watchedPaths.map((p) => `${p}=${hashOf(p)}`)
+
+  check(
+    '🔴 这次导入确实改了中心记录 —— 下一条才有意义',
+    restoring.entriesUpdated === 1,
+    `更新 ${restoring.entriesUpdated} 个变量`
+  )
+  // detail 要分别写成功和失败两种情况：第一版无论过没过都说「N 个文件哈希未变」，
+  // 而它红的时候那句话正好是反的 —— 一条说谎的失败信息比没有信息更费时间。
+  const touchedByImport = hashesBefore.filter((line, index) => line !== hashesAfter[index])
+  check(
+    '🔴 但磁盘上的 .env 一个字节都没变（导入只写中心记录）',
+    touchedByImport.length === 0,
+    touchedByImport.length === 0
+      ? `${hashesBefore.length} 个文件哈希未变`
+      : `被改动的文件：${touchedByImport.map((line) => line.split('=')[0]).join(', ')}`
+  )
+  check(
+    '导入把被改掉的值还原了回来',
+    repo.revealEntry(victim.id).value === victimOriginal,
+    `还原成 ${repo.revealEntry(victim.id).value}（原值 ${victimOriginal}）`
+  )
+
+  // --- 导入一个本机没有的项目：记录建起来，但磁盘上什么都不写 ---------------
+  const importedRoot = join(sandbox, 'imported-project')
+  const syntheticPayload = JSON.stringify({
+    formatVersion: 1,
+    exportedAt: Date.now(),
+    projects: [
+      {
+        name: 'imported',
+        absolutePath: importedRoot,
+        files: [
+          {
+            relativePath: '.env.local',
+            environment: 'local',
+            entries: [
+              { key: 'IMPORTED_KEY', occurrence: 0, value: 'sk-proj-importedvalue0123456789' },
+              { key: 'IMPORTED_PORT', occurrence: 0, value: '9000' }
+            ]
+          }
+        ]
+      }
+    ],
+    credentials: []
+  })
+  const importedResult = transfer.applyImport(syntheticPayload, {
+    fileKeys: [transfer.fileKeyOf(importedRoot, '.env.local')],
+    credentialNames: []
+  })
+  check(
+    '导入一个新项目会把记录建起来',
+    importedResult.projectsCreated === 1 &&
+      importedResult.filesCreated === 1 &&
+      importedResult.entriesAdded === 2,
+    `项目 ${importedResult.projectsCreated}、文件 ${importedResult.filesCreated}、变量 ${importedResult.entriesAdded}`
+  )
+  check(
+    '🔴 但磁盘上连那个目录都没被创建出来 —— 导入只写中心记录',
+    !existsSync(importedRoot),
+    existsSync(importedRoot) ? '导入把文件写到磁盘上了' : '磁盘未被触碰'
+  )
+
+  const importedProject = repo.listProjects().find((p) => p.name === 'imported')
+  const importedEntries = repo.listEntries({ projectId: importedProject!.id })
+  check(
+    '🔴 导入的敏感值同样是加密入库的（列表里只给掩码）',
+    importedEntries.every((entry) =>
+      entry.sensitivity === 'high' ? entry.displayValue === MASKED_PLACEHOLDER : true
+    ) && importedEntries.some((entry) => entry.sensitivity === 'high'),
+    importedEntries.map((entry) => `${entry.key}:${entry.sensitivity}`).join(', ')
+  )
+  repo.removeProject(importedProject!.id)
+  // 这一段自己造的凭据也要收干净，否则界面验收那边的凭据列表会多出一条（§8）。
+  cred.deleteCredential(transferCredential.id)
 
   // --- Vault 锁定后读不到值 -------------------------------------------------
   vault.lock()

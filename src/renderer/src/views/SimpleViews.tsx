@@ -319,7 +319,9 @@ const ACTION_LABELS: Record<string, string> = {
   'credential.sync': '同步到绑定文件',
   'credential.delete': '删除凭据',
   'cli.inject': 'CLI 注入到子进程',
-  'template.generate': '生成 .env.example'
+  'template.generate': '生成 .env.example',
+  'transfer.export': '加密导出',
+  'transfer.import': '从导出包导入'
 }
 
 function actionLabel(action: string): string {
@@ -350,6 +352,11 @@ const ORANGE_ACTIONS = new Set([
   // 🔴 生成的模板本身不含值，但它是唯一一个**设计上就要被提交进 Git** 的产物 ——
   // 会离开这台机器的东西，值得在记录里一眼看见。
   'template.generate',
+  // 🔴 导出是最宽的一条明文出口：一次把选中项目的全部值（可能还有全部模型 Key）
+  // 装进一个文件。它比上面任何一条走得都远。
+  'transfer.export',
+  // 导入会成批改写中心记录。
+  'transfer.import',
   // 删掉了中心记录
   'project.remove',
   'credential.delete'
