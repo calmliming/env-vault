@@ -3,6 +3,12 @@
 > **新会话请先读这一份，再读你要动的那部分对应的 PHASE 文档。**
 > 规格书是 `DEVELOPMENT_PLAN.md`，它是需求的唯一真源；本文件只讲「现在到哪了、
 > 有哪些坑、下一步做什么」。
+>
+> ⚠️ 规格书在**仓库根目录**，不在 `docs/`（`docs/` 下只有交接与阶段记录）。
+> 根目录还有 `DEVELOPMENT_PLAN.baseline.md` / `.diff.txt` / `.ROLLBACK.sh` /
+> `.VERIFICATION.txt` 四个同名附属文件 —— 那是早前改写规格书时留下的
+> 基线、差异和回滚脚本，**已被 `.gitignore` 排除、不参与构建**。
+> 只有 `DEVELOPMENT_PLAN.md` 进了版本库，读的时候别拿错。
 
 ## 0. 一句话
 
@@ -101,7 +107,17 @@ src/main/
     *.test.ts        单元测试，node --test 直接跑
 
 src/preload/index.ts 白名单桥。没有通用 invoke
-src/renderer/src/    React。hooks/useWorkspace.ts 是数据层
+
+src/renderer/src/
+  App.tsx            视图切换 + 所有弹窗的入口都挂在这里
+  hooks/
+    useWorkspace.ts  项目、环境、配置项、文件的数据层
+    useCredentials.ts 凭据与厂商列表的数据层
+  views/             overview（配置表 + 识别建议）/ credentials / settings / SimpleViews
+  modals/            差异、删除、凭据新增轮换、绑定、同步预览……
+  state/             modal.tsx（单例弹窗宿主）+ toast.tsx
+  styles/global.css  视觉系统。改滚动相关的四层链前先读里面那段注释
+
 index.html           阶段 0 之前的 HTML 原型，留作视觉对照，不参与构建
 ```
 
@@ -112,9 +128,9 @@ index.html           阶段 0 之前的 HTML 原型，留作视觉对照，不�
 而 Node 的 ESM 解析不会替你补扩展名。
 其它目录保持无后缀。`tsconfig.node.json` 里为此开了 `allowImportingTsExtensions`。
 
-**`src/main/env/` 里不能用构造函数参数属性**（`constructor(readonly x: T)`）。
+**这两个目录里也不能用构造函数参数属性**（`constructor(readonly x: T)`）。
 Node 的类型剥离是 strip-only 的，会报 `ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX`。
-写成显式字段赋值。其它目录不受限制。
+写成显式字段赋值。其它目录不受限制（`repositories.ts` 的 `RepositoryError` 就用了）。
 
 **新增一条 IPC 能力必须同时改 `shared/ipc.ts` 和 `preload/index.ts`。**
 这道「改两处」的摩擦是有意的：一个接受通道名当参数的通用 `invoke` 等于把白名单
@@ -146,12 +162,18 @@ Node 的类型剥离是 strip-only 的，会报 `ERR_UNSUPPORTED_TYPESCRIPT_SYNT
 **生产 CSP 不含 `unsafe-inline`。** 渲染层不要写内联 `style` 字符串，
 动态颜色用修饰类或 CSS 变量。
 
-## 6. 🔴 敏感值的边界（改 repositories 或 IPC 时务必守住）
+## 6. 🔴 敏感值的边界（改 repositories / credentials / IPC 时务必守住）
 
 ```
-磁盘明文 → scan 解析 → vault.encryptValue → SQLite BLOB（只有密文）
+配置项：
+磁盘明文 → scan 解析 → vault.encryptValue → config_entries.encrypted_value（只有密文）
         → listEntries 在主进程侧换成掩码占位符  ← 明文到这里止步
         → IPC → 渲染层拿到 ••••••••
+
+模型凭据：
+用户粘贴 → vault.encryptValue → model_credentials.encrypted_api_key（只有密文）
+        → listCredentials 只给 fingerprint + last_four  ← 明文到这里止步
+        → 同步时在主进程内存里解密，直接交给写盘，不经过任何返回值
 ```
 
 明文过桥**只发生在 `entries:reveal` 和 `credentials:reveal` 两个通道**，
@@ -183,7 +205,8 @@ Node 的类型剥离是 strip-only 的，会报 `ERR_UNSUPPORTED_TYPESCRIPT_SYNT
 规矩已经在这一刀里定死了，照着做即可：
 
 - **仅在用户显式点「验证」时发**，不自动验证、不定时重试、不在启动时探活；
-- **只打元数据接口**（`/models` 这类），不打推理接口（§7：避免无意产生推理费用）；
+- **只打元数据接口**（`/models` 这类），不打推理接口
+  （计划 §7：避免无意产生推理费用）；
 - 适配器保持纯函数 —— `describeValidation()` 返回描述，发包的是另一层。
   那一层要能注入假传输，否则验收脚本一跑就会把测试 Key 发到真实厂商去；
 - 请求头里带着完整 Key，**整个 `ValidationRequest` 对象禁止进日志**。
@@ -193,7 +216,7 @@ Node 的类型剥离是 strip-only 的，会报 `ERR_UNSUPPORTED_TYPESCRIPT_SYNT
 剪贴板定时清理）—— 轮换的机器其实已经就位了，阶段 4 主要是补
 「旧版本标记 revoked + 不含明文的审计记录」和安全检查那一页。
 
-## 8. 三条来自踩坑的经验
+## 8. 四条来自踩坑的经验
 
 **一条从来没红过的断言，要么是代码真的对，要么是断言根本够不着它 ——
 这两种情况在测试报告上长得一模一样。** 这条在这个仓库里已经踩中两次：
@@ -203,9 +226,13 @@ Node 的类型剥离是 strip-only 的，会报 `ERR_UNSUPPORTED_TYPESCRIPT_SYNT
 - `original_format` 存了整行明文却一直没人发现，因为「明文不落库」那条断言
   只翻了 `encrypted_value` 一列（PHASE-2 §7）。
 
-**判断一条断言有没有用的办法是把 bug 放回去跑一遍。** 两次都是这么确认的：
-把泄漏改回原样，老断言依然 PASS，新断言才报出泄漏的列名。
-写完一条 🔴 断言就顺手做一次这个动作，成本一分钟。
+**判断一条断言有没有用的办法是把 bug 放回去跑一遍。**
+`original_format` 那条就是这么确认的：把泄漏改回原样，老断言依然 PASS，
+新断言才报出 `泄漏的列: original_format`。写完一条 🔴 断言顺手做一次，成本一分钟。
+
+（并发守卫那条是另一种发现方式 —— 补上一个**真正的**并发场景才暴露出来。
+两种办法解决的是同一个问题：确认断言能到达它要守的那个分支。
+阶段 2、3 的两道写盘守卫都因此是**分开**验的，先让其中一道必过再验另一道。）
 
 **验收脚本抓到的失败，先判断是"我的期望写错了"还是"实现写错了"，别急着改期望。**
 阶段 1 有两条失败，一条是我算错了数（改期望），另一条是重扫会推翻用户的取消勾选
@@ -222,5 +249,18 @@ Node 的类型剥离是 strip-only 的，会报 `ERR_UNSUPPORTED_TYPESCRIPT_SYNT
 
 ## 9. 提交与推送
 
-仓库已经有 git，当前在 `main`，有远端 `origin`。
-用户没明说「推」就不要推。
+仓库在 `main`，远端 `origin` 是 GitHub。阶段 0~3 已经全部提交并推送，
+工作树干净。**用户没明说「推」就不要推**，也不要自作主张开分支或改历史。
+
+一条实际踩到的：本仓库的 Bash 工具是 Git Bash，**不认 PowerShell 的
+here-string**（`@'…'@`）。写多行提交信息用 heredoc：
+
+```bash
+git commit -F - <<'EOF'
+标题
+
+正文
+EOF
+```
+
+用错的表现是标题里多出一个孤零零的 `@`。
