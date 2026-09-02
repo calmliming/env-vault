@@ -353,13 +353,18 @@ test('格式骨架保留 export、空白、引号风格与行内注释', () => {
   const doc = parseEnv(
     ['export A=bare', "B='single'", 'C="double"', '  D   =   padded  ', 'E=x   # 说明'].join('\n')
   )
-  assert.deepEqual(entriesOf(doc).map(formatSkeleton), [
-    'export A=<value>',
-    "B='<value>'",
-    'C="<value>"',
-    '  D   =   <value>  ',
-    'E=<value>   # 说明'
-  ])
+  // 不能写成 .map(formatSkeleton)：它现在有第二个参数（占位符），
+  // 而 .map 会把 index 塞进去。
+  assert.deepEqual(
+    entriesOf(doc).map((node) => formatSkeleton(node)),
+    [
+      'export A=<value>',
+      "B='<value>'",
+      'C="<value>"',
+      '  D   =   <value>  ',
+      'E=<value>   # 说明'
+    ]
+  )
 })
 
 test('多行值的骨架收敛成一行，不把换行带进那一列', () => {

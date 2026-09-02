@@ -15,6 +15,7 @@ import { NoticeModal } from './modals/NoticeModal'
 import { ProjectModal } from './modals/ProjectModal'
 import { SearchModal } from './modals/SearchModal'
 import { SyncModal } from './modals/SyncModal'
+import { TemplateModal } from './modals/TemplateModal'
 import { ModalProvider, useModal } from './state/modal'
 import { ToastProvider, useToast } from './state/toast'
 import { CredentialsView } from './views/CredentialsView'
@@ -258,6 +259,26 @@ function Workspace(): ReactNode {
     })
   }, [openModal, workspace.files, openDiff])
 
+  const openTemplate = useCallback(() => {
+    openModal({
+      kicker: '生成模板',
+      title: '生成 .env.example',
+      render: ({ close }) => (
+        <TemplateModal
+          close={close}
+          showToast={showToast}
+          files={workspace.files}
+          onWritten={() => {
+            // 生成会在磁盘上造出/改掉一个 .env* 文件。它通常不纳管，
+            // 但纳管了的话文件列表和差异状态都要跟着刷新。
+            void workspace.reloadCurrent()
+            void workspace.reloadProjects(workspace.selectedProject?.id)
+          }}
+        />
+      )
+    })
+  }, [openModal, showToast, workspace])
+
   const openSearch = useCallback(() => {
     openModal({
       kicker: '快速定位',
@@ -327,6 +348,7 @@ function Workspace(): ReactNode {
               onAddProject={openProject}
               onOpenSync={openSync}
               onOpenDiff={openDiff}
+              onOpenTemplate={openTemplate}
               onDeleteEntry={openDeleteEntry}
               onExtractCredential={(suggestion) =>
                 workspace.selectedProject &&

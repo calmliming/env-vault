@@ -807,7 +807,12 @@ export function restoreFileFromCentral(
   }
 }
 
-function backupRoot(): string {
+/**
+ * 备份根目录。导出是给 `db/template.ts` 用的：新建 `.env.example` 时目标文件
+ * 还不存在，走不了 `writeGuarded`（它要求一个真实的 expectedHash），
+ * 但备份/原子写这条路必须是同一条。
+ */
+export function backupRoot(): string {
   return join(app.getPath('userData'), 'backups')
 }
 

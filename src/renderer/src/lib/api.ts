@@ -84,6 +84,11 @@ export const bridge = {
   scanSecurity: (projectId: number) => call(() => window.envvault.scanSecurity(projectId)),
   listActivity: (limit?: number) => call(() => window.envvault.listActivity(limit)),
 
+  // --- .env.example 生成（阶段 5b）---
+  previewTemplate: (fileId: number) => call(() => window.envvault.previewTemplate(fileId)),
+  writeTemplate: (fileId: number, expectedTargetHash: string | null) =>
+    call(() => window.envvault.writeTemplate(fileId, expectedTargetHash)),
+
   // --- 模型凭据（阶段 3）---
   listCredentials: () => call(() => window.envvault.listCredentials()),
   listProviders: () => call(() => window.envvault.listProviders()),

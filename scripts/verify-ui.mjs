@@ -158,8 +158,10 @@ async function runChecks() {
   check(
     'preload 只暴露白名单方法',
     // 阶段 3 收尾 +validateCredential（33→34）、4a +scanSecurity（→35）、
-    // 4b +listCredentialVersions/copyEntryValue/copyCredentialKey（→38）。
-    isolation.bridgeType === 'object' && isolation.bridgeKeys.length === 38,
+    // 4b +listCredentialVersions/copyEntryValue/copyCredentialKey（→38）、
+    // 5b +previewTemplate/writeTemplate（→40）。
+    // 数字写死是有意的：桥上多一个方法就红一次，逼人过一眼那是不是该暴露的东西。
+    isolation.bridgeType === 'object' && isolation.bridgeKeys.length === 40,
     `${isolation.bridgeKeys.length} 个：${isolation.bridgeKeys.join(', ')}`
   )
 
@@ -1275,8 +1277,19 @@ async function runChecks() {
   )
   check(
     '记录里的动作都是中文，没漏掉哪一类而露出原始标识',
-    activity.labels.every((label) => !label.includes('.')),
-    activity.labels.filter((label) => label.includes('.')).join('、') || '全部有中文标签'
+    // 原来用的是「标签里不含 `.`」当代理，5b 的「生成 .env.example」把它撞红了 ——
+    // 那是个合法标签，只是里面有文件名。断言的名字说的是「都是中文」，
+    // 那就直接验这个：每个标签至少含一个汉字。`template.generate` 这种
+    // 漏出来的原始标识依然会红，而合法标签不再误伤。
+    activity.labels.every((label) => /[一-龥]/.test(label)),
+    activity.labels.filter((label) => !/[一-龥]/.test(label)).join('、') ||
+      '全部有中文标签'
+  )
+  check(
+    '🔴 生成模板也留了痕（唯一一个要进 Git 的产物，更该可审计）',
+    activity.labels.includes('生成 .env.example'),
+    [...new Set(activity.labels)].filter((l) => l.includes('生成')).join('、') ||
+      '（记录里找不到生成动作）'
   )
   check(
     '🔴 操作记录页面不含任何明文值（§5.5）',
@@ -1380,6 +1393,112 @@ async function runChecks() {
     '不再声称这个功能"将在阶段 2 接入"',
     pendingDiff.mentionsFuturePhase === false,
     `含过期说明=${pendingDiff.mentionsFuturePhase}`
+  )
+
+  // --- 生成 .env.example（阶段 5b）------------------------------------------
+  // 这是唯一一个设计上要被提交进 Git 的产物，所以界面这一关要验两件事：
+  // 预览里没有明文，以及**点完确认之后磁盘上那份**也没有明文。
+  const templateTarget = join(sandbox, 'fixture-project', '.env.example')
+
+  // 🔴 先把目标涂成一段哨兵。verify:core 已经用同一个底本生成过一次，
+  // 不涂的话「界面写出来的内容对不对」这条断言会**空过** ——
+  // 界面就算根本没写成功，磁盘上也躺着一份长得一模一样的旧结果。
+  const TEMPLATE_SENTINEL = '# SENTINEL-BEFORE-UI-WRITE\n'
+  writeFileSync(templateTarget, TEMPLATE_SENTINEL)
+
+  const tpl = await evaluate(`(async () => {
+    const wait = (ms) => new Promise(r => setTimeout(r, ms));
+    [...document.querySelectorAll('.head-actions button')]
+      .find(b => b.textContent.includes('生成 .env.example'))?.click();
+    for (let i = 0; i < 30; i++) {
+      await wait(100);
+      if (document.querySelector('.template-preview-body')) break;
+    }
+
+    // 🔴 默认底本是 .env，而 .env 里本来就没有秘密 —— 拿它去验「模板里没有明文」
+    // 是一条空过的断言。切到 .env.local（密钥密布的那份）再验。
+    const select = document.querySelector('#template-source');
+    const local = [...select.options].find(o => o.textContent.includes('.env.local'));
+    const setValue = Object.getOwnPropertyDescriptor(
+      window.HTMLSelectElement.prototype, 'value'
+    ).set;
+    setValue.call(select, local.value);
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    for (let i = 0; i < 30; i++) {
+      await wait(100);
+      const body = document.querySelector('.template-preview-body')?.textContent ?? '';
+      if (body.includes('OPENAI_API_KEY')) break;
+    }
+
+    const pre = document.querySelector('.template-preview-body')?.textContent ?? '';
+    const bodyText = document.querySelector('.modal-body')?.innerText ?? '';
+    const confirm = [...document.querySelectorAll('.modal-actions button')]
+      .find(b => b.textContent.includes('覆盖') || b.textContent.includes('生成文件'));
+    const sourceOptions = [...document.querySelectorAll('#template-source option')]
+      .map(o => o.textContent.trim());
+    return {
+      title: document.querySelector('#modal-title')?.textContent ?? '',
+      pre,
+      sourceOptions,
+      confirmLabel: confirm?.textContent.trim() ?? '',
+      confirmDisabled: confirm?.disabled ?? true,
+      blocked: !!document.querySelector('[data-testid="template-leaks"]'),
+      bodyHasSecret: bodyText.includes(${JSON.stringify(FIXTURE_SECRET)})
+    };
+  })()`, true)
+
+  check(
+    '「生成 .env.example」能打开、能换底本、并出预览',
+    tpl.title === '生成 .env.example' && tpl.pre.includes('OPENAI_API_KEY'),
+    `${tpl.title} / 预览 ${tpl.pre.length} 字节 / 首行 ${JSON.stringify(tpl.pre.split('\n')[0] ?? '')}`
+  )
+  check(
+    '🔴 预览里没有任何明文 —— 它整段都要铺在屏幕上',
+    tpl.bodyHasSecret === false && !tpl.pre.includes(FIXTURE_SECRET),
+    `含明文=${tpl.bodyHasSecret}`
+  )
+  check(
+    '🔴 但变量名确实在预览里 —— 上一条才有意义',
+    tpl.pre.includes('OPENAI_API_KEY='),
+    tpl.pre.split('\n')[0] ?? ''
+  )
+  check(
+    '底本只给非模板文件，不给 .env.example 自己',
+    tpl.sourceOptions.length > 0 && !tpl.sourceOptions.some((o) => o.includes('.env.example')),
+    tpl.sourceOptions.join(' / ') || '（没有可选底本）'
+  )
+  check(
+    '目标已存在时，按钮直说这是覆盖',
+    tpl.confirmLabel.includes('覆盖') && tpl.confirmDisabled === false && tpl.blocked === false,
+    `按钮=${tpl.confirmLabel} disabled=${tpl.confirmDisabled}`
+  )
+
+  // 🔴 从界面点下去，然后回到 node 侧读**磁盘上那份**。
+  // 只验"弹窗说成功了"是空过的：它证明不了写出去的字节长什么样。
+  const tplDone = await evaluate(`(async () => {
+    const wait = (ms) => new Promise(r => setTimeout(r, ms));
+    [...document.querySelectorAll('.modal-actions button')]
+      .find(b => b.textContent.includes('覆盖'))?.click();
+    for (let i = 0; i < 40; i++) {
+      await wait(100);
+      if (!document.querySelector('.modal-layer')) break;
+    }
+    return {
+      closed: !document.querySelector('.modal-layer'),
+      toast: document.querySelector('.toast')?.textContent.trim() ?? ''
+    };
+  })()`, true)
+
+  const afterWrite = readFileSync(templateTarget, 'utf8')
+  check('确认后弹窗关闭并给了回执', tplDone.closed === true && tplDone.toast.includes('已生成'), `closed=${tplDone.closed} toast=${tplDone.toast}`)
+  check(
+    '🔴 界面确实把文件写出去了（哨兵被覆盖），且磁盘上搜不到明文',
+    !afterWrite.includes(TEMPLATE_SENTINEL.trim()) &&
+      !afterWrite.includes(FIXTURE_SECRET) &&
+      afterWrite.includes('OPENAI_API_KEY='),
+    afterWrite.includes(TEMPLATE_SENTINEL.trim())
+      ? '哨兵还在 —— 界面根本没写成功'
+      : `${afterWrite.length} 字节，哨兵已被覆盖`
   )
 
   check(

@@ -11,6 +11,7 @@ interface OverviewViewProps {
   onAddProject(): void
   onOpenSync(): void
   onOpenDiff(file: EnvFileView): void
+  onOpenTemplate(): void
   onDeleteEntry(entry: ConfigEntryView, expectedHash: string): void
   onExtractCredential(suggestion: CredentialSuggestion): void
   onVaultAction(): void
@@ -24,6 +25,7 @@ export function OverviewView({
   onAddProject,
   onOpenSync,
   onOpenDiff,
+  onOpenTemplate,
   onDeleteEntry,
   onExtractCredential,
   onVaultAction,
@@ -275,6 +277,18 @@ export function OverviewView({
           </button>
           <button className="outline-btn" onClick={onOpenSync} disabled={locked}>
             处理差异{driftedFiles.length > 0 ? `（${driftedFiles.length}）` : ''}
+          </button>
+          {/*
+            这一个**不**跟着 locked 禁用：模板从磁盘文件生成，全程不解密，
+            而文件列表本来就锁着也读得出来（useWorkspace 里那条注释）。
+            和安全检查页同一个性质。
+          */}
+          <button
+            className="outline-btn"
+            onClick={onOpenTemplate}
+            title="按某份 .env 生成不含值的 .env.example（Vault 锁着也能用）"
+          >
+            生成 .env.example
           </button>
         </div>
       </div>

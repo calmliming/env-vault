@@ -443,9 +443,14 @@ export const REDACTED_VALUE = '<value>'
  *
  * 骨架保留了 §4.2 要的全部东西：`export` 前缀、等号两侧的空白、引号风格、
  * 行内注释。唯独不保留值本身，而值恰恰是那一列不该有的东西。
+ *
+ * `placeholder` 默认是 `<value>`（入库用）。阶段 5b 的 `.env.example` 生成
+ * 传空串，产出 `KEY=` 那种惯例写法 —— 同一套机制，两个占位符，
+ * 不为模板另写一份骨架逻辑。⚠️ 它**不动 `suffix`**：行内注释里也可能藏着值，
+ * 那由调用方先处理好再传进来（见 `template.ts` 的 `redactCommentText`）。
  */
-export function formatSkeleton(node: EntryNode): string {
-  return node.prefix + encodeValue(REDACTED_VALUE, node.quote).text + node.suffix
+export function formatSkeleton(node: EntryNode, placeholder: string = REDACTED_VALUE): string {
+  return node.prefix + encodeValue(placeholder, node.quote).text + node.suffix
 }
 
 /** 文档里全部条目，按出现顺序。 */

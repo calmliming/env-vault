@@ -658,6 +658,15 @@ h1 { font-size: 35px; letter-spacing: 0; line-height: 1.05; margin: 8px 0 9px; }
 .modal-divider { height: 1px; background: var(--line); margin: 19px 0; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 22px; }
 .modal-actions .outline-btn, .modal-actions .primary-btn, .modal-actions .danger-btn { min-width: 76px; }
+/* .env.example 生成（阶段 5b） */
+.template-blocked { border: 1px solid #d9b5a8; border-radius: 6px; background: #fbf3ef; padding: 12px; margin-bottom: 16px; }
+.template-blocked strong { display: block; color: #9c4a35; font-size: 11px; }
+.template-blocked p { margin: 6px 0 0; color: #7d5647; font-size: 11px; line-height: 1.55; }
+.template-preview { border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.template-preview-head { padding: 9px 12px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 11px; }
+/* 长行横向滚动关在自己这一格里，别把窗口级零滚动条那条链弄破（global 顶部那段注释）。 */
+.template-preview-body { margin: 0; padding: 12px; max-height: 260px; overflow: auto; font: 11px/1.65 var(--mono); color: var(--ink); white-space: pre; }
+
 .diff-list { border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
 .diff-row { display: grid; grid-template-columns: 22px 1fr auto; align-items: center; gap: 9px; padding: 11px 12px; border-bottom: 1px solid #eeeae3; }
 .diff-row:last-child { border-bottom: 0; }

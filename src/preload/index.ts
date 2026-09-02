@@ -48,6 +48,8 @@ import {
   type SecurityReport,
   type SelectDirectoryRequest,
   type SelectDirectoryResult,
+  type TemplatePreview,
+  type TemplateWriteResult,
   type VaultStatus
 } from '@shared/ipc'
 
@@ -169,6 +171,16 @@ const api: EnvVaultApi = {
   restoreFile: (fileId: number, keys: string[], expectedHash: string) =>
     ipcRenderer.invoke(CHANNELS.filesRestore, { fileId, keys, expectedHash }) as Promise<
       IpcResult<RestoreResult>
+    >,
+
+  // --- .env.example 生成（阶段 5b）---
+  // 🔴 写入这一侧只送 id 和目标哈希，**不送内容**：模板由主进程重新生成。
+  // 让渲染层把内容送进来，等于给它开一个「往任意 .env.example 写任意字节」的原语。
+  previewTemplate: (fileId: number) =>
+    ipcRenderer.invoke(CHANNELS.templatePreview, { fileId }) as Promise<IpcResult<TemplatePreview>>,
+  writeTemplate: (fileId: number, expectedTargetHash: string | null) =>
+    ipcRenderer.invoke(CHANNELS.templateWrite, { fileId, expectedTargetHash }) as Promise<
+      IpcResult<TemplateWriteResult>
     >,
 
   onFilesChanged: (handler: (events: FileChangedEvent[]) => void) => {

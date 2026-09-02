@@ -318,7 +318,8 @@ const ACTION_LABELS: Record<string, string> = {
   'credential.unbind': '解除绑定',
   'credential.sync': '同步到绑定文件',
   'credential.delete': '删除凭据',
-  'cli.inject': 'CLI 注入到子进程'
+  'cli.inject': 'CLI 注入到子进程',
+  'template.generate': '生成 .env.example'
 }
 
 function actionLabel(action: string): string {
@@ -346,6 +347,9 @@ const ORANGE_ACTIONS = new Set([
   'entry.delete',
   'file.restore',
   'credential.sync',
+  // 🔴 生成的模板本身不含值，但它是唯一一个**设计上就要被提交进 Git** 的产物 ——
+  // 会离开这台机器的东西，值得在记录里一眼看见。
+  'template.generate',
   // 删掉了中心记录
   'project.remove',
   'credential.delete'

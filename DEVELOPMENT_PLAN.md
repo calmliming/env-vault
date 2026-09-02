@@ -437,15 +437,19 @@ redact(value)
 
 ## 12. 当前进度与下一步
 
-阶段 0~4 已完成，阶段 5 的 CLI 注入（5a）也已完成。落地记录分别见
-`docs/PHASE-0.md`（含与本计划的两处偏差及其理由）、`docs/PHASE-1.md`、
+阶段 0~4 已完成，阶段 5 的 CLI 注入（5a）与 `.env.example` 生成（5b）也已完成。
+落地记录分别见 `docs/PHASE-0.md`（含与本计划的两处偏差及其理由）、`docs/PHASE-1.md`、
 `docs/PHASE-2.md`、`docs/PHASE-3.md`、`docs/PHASE-4A.md`、
-`docs/PHASE-4B.md`、`docs/PHASE-5A.md`。
+`docs/PHASE-4B.md`、`docs/PHASE-5A.md`、`docs/PHASE-5B.md`。
 新会话请先读 `docs/HANDOFF.md`：那里写着「现在到哪了、有哪些坑、下一步做什么」。
 
 阶段 4 拆成了两刀，因为它的验收句本来就是两半：
 4a「被 Git 跟踪的敏感文件必须显示风险」、
 4b「轮换旧 Key 时能准确列出受影响的项目和环境」，两半都已完成。
+
+阶段 5 同样拆开了：5a（CLI 注入，本节的验收句）、5b（`.env.example` 生成）、
+5c（批量导入与加密导出）。5b 单独一刀是因为模板是**唯一一个设计上要进 Git 的
+产物**，边界和前面几条「值离开本进程」都不一样；5c 的导出则是又一条明文出口。
 
 **§11 的 MVP 验收清单到这里全部成立。** 剩下的是阶段 5。
 
@@ -461,6 +465,8 @@ redact(value)
 6. ~~阶段 4a：Git 跟踪与 `.gitignore` 检查、风险分级、安全检查页。~~（已完成）
 7. ~~阶段 4b：凭据版本与停用、轮换前的影响范围预览、剪贴板定时清理。~~（已完成）
 8. ~~阶段 5a：`envvault run` 进程注入。~~（已完成）
-9. 阶段 5b：`.env.example` 生成、批量导入与加密导出。
-10. 外部 Secret Manager 适配（1Password / Bitwarden / Doppler）——
+9. ~~阶段 5b：`.env.example` 生成。~~（已完成）
+10. 阶段 5c：批量导入与加密导出。加密导出用**用户口令 + KDF**，
+    不是系统密钥库派生 —— 密钥库派生的包只有本机能解，而换机器/备份正是它的用途。
+11. 外部 Secret Manager 适配（1Password / Bitwarden / Doppler）——
     需要机器上装有各自的 CLI，动手前先想清楚怎么验收。

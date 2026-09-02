@@ -23,6 +23,7 @@ import * as repo from '../src/main/db/repositories'
 import * as cred from '../src/main/db/credentials'
 import * as security from '../src/main/db/security'
 import * as inject from '../src/main/db/inject'
+import * as template from '../src/main/db/template'
 import * as vault from '../src/main/security/vault'
 import { VaultError } from '../src/main/security/vault'
 import { applyEdits, entriesOf, parseEnv, serializeEnv } from '../src/main/env/document.ts'
@@ -1928,6 +1929,56 @@ async function run(): Promise<void> {
     leakedAfter.length === 0 ? `扫了 ${Math.round(dbBytesAfterCredentials.length / 1024)} KiB` : `命中: ${leakedAfter.join(', ')}`
   )
 
+  // --- 🔴 模板生成：兜底没过就绝不写盘（阶段 5b）-----------------------------
+  //
+  // 单独造一个项目，**不往 fixture 里加文件** —— 样例数据是共享的（§8），
+  // 往里加一个 .env* 会弄红后面和界面验收里那些"文件集合"断言。用完就删。
+  //
+  // 这一处的写法是故意挑的：`TODO:` 后面是冒号不是等号，不匹配赋值形状，
+  // 自动脱敏（redactCommentText）够不着它 —— 只有兜底那道能抓住。
+  const leakRoot = join(sandbox, 'leaky-project')
+  mkdirSync(leakRoot, { recursive: true })
+  writeFileSync(
+    join(leakRoot, '.env'),
+    [
+      `# TODO: 上线前把 key 换成 sk-proj-abcdefghijklmnopqrstuvwxyz012345`,
+      'OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz012345',
+      ''
+    ].join('\n')
+  )
+  const leakProject = repo.importProject({
+    rootPath: leakRoot,
+    name: 'leaky',
+    includePaths: [join(leakRoot, '.env')]
+  })
+  const leakFile = repo.listFiles(leakProject.id)[0]!
+  const leakPreview = template.previewTemplate(leakFile.id)
+  check(
+    '🔴 兜底认出了自动脱敏漏掉的那一处',
+    leakPreview.leaks.length === 1 && leakPreview.leaks[0]?.key === 'OPENAI_API_KEY',
+    `leaks=${JSON.stringify(leakPreview.leaks)}`
+  )
+
+  let leakWriteError = ''
+  try {
+    template.writeTemplate(leakFile.id, null)
+  } catch (error) {
+    leakWriteError = error instanceof Error ? error.message : String(error)
+  }
+  const leakTargetExists = existsSync(join(leakRoot, '.env.example'))
+  check(
+    '🔴 兜底没过就拒绝写盘，且磁盘上没留下半个文件',
+    leakWriteError.includes('敏感值') && !leakTargetExists,
+    `拒绝信息=${leakWriteError || '（居然没拒绝）'} / 目标文件存在=${leakTargetExists}`
+  )
+  check(
+    '🔴 拒绝信息里只有行号和 key 名，没有值本身',
+    !leakWriteError.includes('sk-proj-abcdefghijklmnopqrstuvwxyz012345'),
+    leakWriteError.includes('sk-proj-') ? '拒绝信息里带上了 Key' : leakWriteError
+  )
+  repo.removeProject(leakProject.id)
+  rmSync(leakRoot, { recursive: true, force: true })
+
   // --- Vault 锁定后读不到值 -------------------------------------------------
   vault.lock()
 
@@ -1958,6 +2009,91 @@ async function run(): Promise<void> {
   }
   check('Vault 锁定后无法 reveal', revealBlocked === 'VAULT_LOCKED', `code=${revealBlocked}`)
   check('但文件健康度仍可读（不含明文）', repo.listFiles(project.id).length > 0, '哈希比对不需要主密钥')
+
+  // --- 🔴 生成 .env.example：全程不解密，所以锁着也能用（阶段 5b）------------
+  //
+  // 故意放在 vault.lock() **之后**：模板是从磁盘文件生成的，中心记录里根本没有
+  // 注释，所以这条路不需要主密钥。和安全检查同一个性质。
+  // 拿 .env.local 当底本 —— 它是 fixture 里唯一密钥密布的那份，
+  // 用一份本来就没有秘密的文件去验"模板里没有秘密"是空过的。
+  const tplSource = repo.listFiles(project.id).find((f) => f.fileName === '.env.local')!
+  const tplPreview = template.previewTemplate(tplSource.id)
+  check(
+    '🔴 Vault 锁着时照样能生成模板（全程不解密）',
+    tplPreview.entryCount > 0 && tplPreview.leaks.length === 0,
+    `${tplPreview.entryCount} 个变量 → ${tplPreview.targetRelativePath}，leaks=${tplPreview.leaks.length}`
+  )
+  check(
+    '模板保留了注释、行内注释与引号风格，只清掉值',
+    tplPreview.content.includes('# 本机覆盖，不进 Git') &&
+      tplPreview.content.includes('OPENAI_API_KEY=') &&
+      tplPreview.content.includes('LOG_LEVEL=   # 只在本机开 debug') &&
+      tplPreview.content.includes("DB_PASSWORD=''"),
+    JSON.stringify(tplPreview.content.slice(0, 120))
+  )
+  // 🔴 期望从**此刻的源文件**现算，不写死数字：前面的段落删过 DUP、
+  // 也删过 ANTHROPIC_API_KEY，写死的期望会随着别处的改动悄悄失真
+  // （而这里要验的本来就是"模板跟着源文件走"，不是"fixture 长什么样"）。
+  const tplSourceKeys = entriesOf(
+    parseEnv(readFileSync(join(fixtureRoot, '.env.local'), 'utf8'))
+  ).map((node) => node.key)
+  const tplTemplateKeys = entriesOf(parseEnv(tplPreview.content)).map((node) => node.key)
+  check(
+    '模板的变量序列和源文件逐个对得上（含重复 key）',
+    JSON.stringify(tplTemplateKeys) === JSON.stringify(tplSourceKeys),
+    `模板=${tplTemplateKeys.join(',')} / 源=${tplSourceKeys.join(',')}`
+  )
+  check(
+    '🔴 模板里每个变量的值都是空的',
+    entriesOf(parseEnv(tplPreview.content)).every((node) => node.value === ''),
+    entriesOf(parseEnv(tplPreview.content))
+      .filter((node) => node.value !== '')
+      .map((node) => node.key)
+      .join(',') || '全部为空'
+  )
+
+  const tplTarget = join(fixtureRoot, '.env.example')
+  check('底本之外，目标模板此刻是存在的（下一条验的是覆盖）', existsSync(tplTarget), tplTarget)
+  const tplWritten = template.writeTemplate(tplSource.id, tplPreview.targetHash)
+  const tplOnDisk = readFileSync(tplTarget, 'utf8')
+
+  // 🔴 扫的是**磁盘上真实写出来的那份**，不是返回值里的字符串 ——
+  // 返回值干净但写出去的不干净，正是这条断言要防的事。
+  const tplLeaked = NEEDLES.filter((needle) => tplOnDisk.includes(needle))
+  check(
+    '🔴 写出来的 .env.example 里搜不到任何一把样例密钥（阶段 5b 的全部理由）',
+    tplLeaked.length === 0,
+    tplLeaked.length === 0 ? `${tplOnDisk.length} 字节，${tplWritten.entryCount} 个变量` : `命中: ${tplLeaked.join(', ')}`
+  )
+  check(
+    '🔴 但它确实带上了源文件的每一个变量名 —— 上一条才有意义',
+    tplSourceKeys.length > 0 && tplSourceKeys.every((key) => tplOnDisk.includes(key)),
+    tplSourceKeys.filter((key) => !tplOnDisk.includes(key)).join(',') ||
+      `${tplSourceKeys.length} 个变量名都在，值都不在`
+  )
+  check(
+    '覆盖已存在的模板时留了备份',
+    tplWritten.backupPath !== null && existsSync(tplWritten.backupPath),
+    tplWritten.backupPath ?? '（没有备份）'
+  )
+  check(
+    '🔴 生成模板不会把它顺手纳管进来',
+    !repo.listFiles(project.id).some((f) => f.fileName === '.env.example'),
+    repo.listFiles(project.id).map((f) => f.fileName).join(', ')
+  )
+
+  // 目标已经存在了，再拿"我断言它不存在"去写必须失败 —— 那个 null 是断言，不是旁路。
+  let tplAbsentBlocked = ''
+  try {
+    template.writeTemplate(tplSource.id, null)
+  } catch (error) {
+    tplAbsentBlocked = error instanceof Error ? error.message : String(error)
+  }
+  check(
+    '🔴 目标已存在时，expectedTargetHash=null 会被拒绝',
+    tplAbsentBlocked.includes('被创建'),
+    tplAbsentBlocked || '（居然写成功了）'
+  )
 
   // 留给界面验收的是锁定态：让它自己走一遍解锁 → 数据出现。
   if (keepDir) {

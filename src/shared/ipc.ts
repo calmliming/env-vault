@@ -51,6 +51,8 @@ export const CHANNELS = {
   filesDiff: 'files:diff',
   filesAdopt: 'files:adopt',
   filesRestore: 'files:restore',
+  templatePreview: 'template:preview',
+  templateWrite: 'template:write',
   activityList: 'activity:list'
 } as const
 
@@ -630,6 +632,46 @@ export interface RescanResult {
 }
 
 // ---------------------------------------------------------------------------
+// `.env.example` 生成（阶段 5b）
+// ---------------------------------------------------------------------------
+
+/** 生成结果里仍能搜到源文件敏感值的位置。🔴 只有 key 名和行号，不含值。 */
+export interface TemplateLeakView {
+  lineNumber: number
+  key: string
+}
+
+export interface TemplatePreview {
+  /** 源文件在项目里的相对路径。 */
+  sourceRelativePath: string
+  /** 模板会写到哪（项目内相对路径）。固定是同目录下的 `.env.example`。 */
+  targetRelativePath: string
+  /** 目标已存在就是覆盖，界面必须说清楚。 */
+  targetExists: boolean
+  /**
+   * 目标文件当前的磁盘哈希；不存在时为 null。
+   * 写入时原样回传，语义同 `restoreFile`：「我这个决定是基于哪个版本做的」。
+   */
+  targetHash: string | null
+  /** 生成结果全文。🔴 值全部清空，所以这一段不含明文，可以直接铺在界面上。 */
+  content: string
+  /** 进了模板的变量数。 */
+  entryCount: number
+  /** 读不懂、已被略去的行数。 */
+  droppedLines: number
+  /** 🔴 非空表示还能搜到源文件的敏感值。界面必须拦住，主进程也会拒绝写。 */
+  leaks: TemplateLeakView[]
+}
+
+export interface TemplateWriteResult {
+  targetRelativePath: string
+  entryCount: number
+  bytesWritten: number
+  /** 覆盖已有文件时的备份路径；新建时为 null。 */
+  backupPath: string | null
+}
+
+// ---------------------------------------------------------------------------
 // 通道签名
 // ---------------------------------------------------------------------------
 
@@ -742,6 +784,19 @@ export interface IpcContract {
     request: { fileId: number; keys: string[]; expectedHash: string }
     response: RestoreResult
   }
+  [CHANNELS.templatePreview]: { request: { fileId: number }; response: TemplatePreview }
+  /**
+   * 🔴 请求里**没有 content**：模板由主进程重新生成，不接受渲染层送来的内容。
+   * 接受的话等于给渲染层开了一个「往任意 .env.example 写任意字节」的原语，
+   * 预览里那份文本就只是显示用的。
+   *
+   * `expectedTargetHash` 为 null 的语义是「我断言这个文件当时不存在」，
+   * **不是**「跳过校验」—— 主进程会去确认它确实不存在，见 ipc/index.ts。
+   */
+  [CHANNELS.templateWrite]: {
+    request: { fileId: number; expectedTargetHash: string | null }
+    response: TemplateWriteResult
+  }
   [CHANNELS.activityList]: { request: { limit?: number }; response: ActivityRecord[] }
 }
 
@@ -846,6 +901,20 @@ export interface EnvVaultApi {
   adoptDiskFile(fileId: number): Promise<IpcResult<AdoptResult>>
   /** `expectedHash` 是用户看到的那份差异对应的磁盘哈希，对不上就中止写入。 */
   restoreFile(fileId: number, keys: string[], expectedHash: string): Promise<IpcResult<RestoreResult>>
+
+  /** 预览由这个环境文件生成的 `.env.example`。只读，不写盘。 */
+  previewTemplate(fileId: number): Promise<IpcResult<TemplatePreview>>
+  /**
+   * 写出 `.env.example`。内容由主进程重新生成，渲染层送不进来。
+   *
+   * `expectedTargetHash` 取自预览：目标已存在时是它当时的哈希，
+   * 不存在时是 null（断言「那会儿它不存在」，不是跳过校验）。
+   */
+  writeTemplate(
+    fileId: number,
+    expectedTargetHash: string | null
+  ): Promise<IpcResult<TemplateWriteResult>>
+
   listActivity(limit?: number): Promise<IpcResult<ActivityRecord[]>>
   /**
    * 订阅文件变化推送。返回退订函数。

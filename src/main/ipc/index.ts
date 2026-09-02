@@ -25,6 +25,7 @@ import { getDatabaseInfo, initializeDatabase } from '../db'
 import * as repo from '../db/repositories'
 import * as credentials from '../db/credentials'
 import * as security from '../db/security'
+import * as template from '../db/template'
 import { electronClipboard } from '../clipboard/port'
 import { RepositoryError } from '../db/repositories'
 import * as vault from '../security/vault'
@@ -142,6 +143,21 @@ function asFileHash(value: unknown): string {
     throw new RepositoryError('INVALID_ARGUMENT', '缺少 expectedHash，无法做并发校验')
   }
   return value
+}
+
+/**
+ * 同上，但允许 `null` —— 只给「目标文件当时还不存在」这一种情况用
+ * （阶段 5b 新建 `.env.example`）。
+ *
+ * 🔴 `null` 的语义是**断言**「我预览的时候它不存在」，不是「跳过校验」。
+ * 主进程收到 null 会用 `openSync(path, 'wx')` 独占创建来兑现这个断言，
+ * 文件已经在了就失败。上面那个 `asFileHash` 的注释点名拒绝空值，
+ * **别把这里的宽松挪过去**：那三条写盘路径的目标一定是已存在的文件，
+ * 它们没有"文件不存在"这种合法情形。
+ */
+function asFileHashOrAbsent(value: unknown): string | null {
+  if (value === null || value === undefined) return null
+  return asFileHash(value)
 }
 
 /**
@@ -507,6 +523,27 @@ export function registerIpcHandlers(): void {
       asStringArray(body.keys, 'keys'),
       asFileHash(body.expectedHash)
     )
+    void refreshWatchTargets()
+    return result
+  })
+
+  // --- .env.example 生成（阶段 5b）-------------------------------------------
+  // 两个 handler 都不要求解锁：源头是磁盘上的 .env 文件，全程不解密。
+  // 和 security:scan 同一个性质，见 db/template.ts 顶部。
+
+  handle(CHANNELS.templatePreview, (request) => {
+    const body = asRecord(request)
+    return template.previewTemplate(asPositiveInt(body.fileId, 'fileId'))
+  })
+
+  handle(CHANNELS.templateWrite, (request) => {
+    const body = asRecord(request)
+    const result = template.writeTemplate(
+      asPositiveInt(body.fileId, 'fileId'),
+      asFileHashOrAbsent(body.expectedTargetHash)
+    )
+    // 生成会在磁盘上造出/改掉一个 .env* 文件。它通常不纳管（模板默认不勾选），
+    // 但用户勾过就会纳管 —— 那时不刷新就是拿旧哈希去比新文件，静默失效。
     void refreshWatchTargets()
     return result
   })
