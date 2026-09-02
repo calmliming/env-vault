@@ -404,6 +404,7 @@ h1 { font-size: 35px; letter-spacing: 0; line-height: 1.05; margin: 8px 0 9px; }
 .credential-table .value { display: block; }
 .credential-provider { margin-top: 3px; color: var(--muted); font: 10px var(--mono); }
 .credential-fingerprint { margin-top: 4px; color: #a3a69f; font: 10px var(--mono); }
+.credential-validated-at { margin-top: 4px; color: #a3a69f; font: 10px var(--mono); }
 /* 窄窗口下让按钮换行，而不是把整张表撑出横向滚动。 */
 .credential-actions { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
 .danger-text { color: #9c4a35; }

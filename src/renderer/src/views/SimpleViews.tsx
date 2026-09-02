@@ -169,20 +169,51 @@ const ACTION_LABELS: Record<string, string> = {
   'entry.update': '编辑变量',
   'entry.delete': '删除变量',
   'file.adopt': '以磁盘为准',
-  'file.restore': '以记录为准写回'
+  'file.restore': '以记录为准写回',
+  'credential.create': '新增凭据',
+  'credential.update': '修改凭据',
+  'credential.rotate': '轮换 Key',
+  'credential.reveal': '显示 Key',
+  'credential.validate': '向厂商验证',
+  'credential.bind': '绑定凭据',
+  'credential.unbind': '解除绑定',
+  'credential.sync': '同步到绑定文件',
+  'credential.delete': '删除凭据'
 }
 
 function actionLabel(action: string): string {
   return ACTION_LABELS[action] ?? action
 }
 
-/** 会动到用户磁盘文件、或者读出过明文的动作标橙色，其余按信息量分。 */
+/**
+ * 会动到用户磁盘文件、或者读出过明文的动作标橙色，其余按信息量分。
+ *
+ * 用集合而不是一串 if：凭据那边有同样性质的动作
+ * （`credential.reveal` 读出过明文、`credential.sync` 会改磁盘文件），
+ * 一条条 if 排下去的结果就是漏掉它们 —— 之前正是漏了。
+ */
+const ORANGE_ACTIONS = new Set([
+  // 读出过明文
+  'entry.reveal',
+  'credential.reveal',
+  // 改过用户的磁盘文件
+  'entry.delete',
+  'file.restore',
+  'credential.sync',
+  // 删掉了中心记录
+  'project.remove',
+  'credential.delete'
+])
+
+const BLUE_ACTIONS = new Set([
+  'project.rescan',
+  'entry.update',
+  'credential.validate',
+  'credential.rotate'
+])
+
 function actionTone(action: string): string {
-  if (action === 'entry.reveal') return 'orange'
-  if (action === 'project.remove') return 'orange'
-  if (action === 'entry.delete') return 'orange'
-  if (action === 'file.restore') return 'orange'
-  if (action === 'project.rescan') return 'blue'
-  if (action === 'entry.update') return 'blue'
+  if (ORANGE_ACTIONS.has(action)) return 'orange'
+  if (BLUE_ACTIONS.has(action)) return 'blue'
   return ''
 }

@@ -41,6 +41,8 @@ export function CredentialsView({
   const [bindings, setBindings] = useState<CredentialBindingView[]>([])
   /** 已点开显示的 Key：id → 明文。不进任何持久层，切页面就没了。 */
   const [revealed, setRevealed] = useState<ReadonlyMap<number, string>>(new Map())
+  /** 正在验证的那一条。同一时刻只允许一个在飞的验证请求。 */
+  const [validating, setValidating] = useState<number | null>(null)
 
   const loadBindings = useCallback(async (credentialId: number) => {
     // 绑定列表跟着「同步预览」一起来 —— 它已经按绑定逐条算好了状态，
@@ -88,6 +90,33 @@ export function CredentialsView({
     }
     setRevealed((prev) => new Map(prev).set(credential.id, result.data.apiKey))
     showToast('Key 已临时显示，本次操作已记入操作记录')
+  }
+
+  /**
+   * 🔴 全应用唯一会发出站请求的动作，只在这里、只由这次点击触发。
+   *
+   * 不要给它加 `useEffect`、加重试、加「顺手验一下」——
+   * 计划 §7 要求验证仅在用户显式发起时发生。
+   *
+   * 结果分两类，措辞必须分开：**没验出结论**（网络不通、限流、地址错）
+   * 说的是「这次没问出来」，不是「你的 Key 坏了」。混为一谈会让用户
+   * 在离线时以为自己的 Key 全废了。
+   */
+  async function validate(credential: CredentialSummary): Promise<void> {
+    setValidating(credential.id)
+    const result = await bridge.validateCredential(credential.id)
+    setValidating(null)
+
+    if (!result.ok) {
+      showToast(result.message)
+      return
+    }
+    await store.reload()
+    showToast(
+      result.data.conclusive
+        ? result.data.message
+        : `${result.data.message}凭据状态保持不变。`
+    )
   }
 
   async function unbind(bindingId: number): Promise<void> {
@@ -232,6 +261,13 @@ export function CredentialsView({
                         <span className={`type-tag ${statusTone(credential.status)}`}>
                           {STATUS_LABELS[credential.status]}
                         </span>
+                        {/* 「什么时候验的」和「验成什么样」一样重要：
+                            半年前验过的 active 和刚验过的 active 不是一回事。 */}
+                        <div className="credential-validated-at">
+                          {credential.lastValidatedAt === null
+                            ? '尚未验证过'
+                            : `验于 ${new Date(credential.lastValidatedAt).toLocaleString('zh-CN')}`}
+                        </div>
                       </td>
                       <td>
                         <button
@@ -244,6 +280,15 @@ export function CredentialsView({
                       </td>
                       <td>
                         <div className="credential-actions">
+                          <button
+                            className="outline-btn tiny"
+                            data-action="validate-credential"
+                            onClick={() => void validate(credential)}
+                            disabled={validating !== null}
+                            title="向厂商的模型列表接口发一次请求，确认这把 Key 现在能不能用"
+                          >
+                            {validating === credential.id ? '验证中…' : '验证'}
+                          </button>
                           <button className="outline-btn tiny" onClick={() => onBind(credential)}>
                             绑定
                           </button>
@@ -317,15 +362,24 @@ export function CredentialsView({
   )
 }
 
+/**
+ * 🔴「已失效」和「已停用」是两件事，措辞上不能含糊：
+ * 前者是厂商拒绝了这把 Key，后者是用户自己按的停用。
+ * 用户看到前者要去厂商控制台换一把，看到后者只需要自己按回去。
+ */
 const STATUS_LABELS = {
   unverified: '未验证',
   active: '可用',
+  invalid: '已失效',
   revoked: '已停用'
 } as const
 
 /** 复用配置表的 type-tag 配色，不另起一套。 */
 function statusTone(status: CredentialSummary['status']): string {
   if (status === 'active') return 'boolean'
-  if (status === 'revoked') return 'secret'
+  // 「已失效」是需要用户去处理的坏消息，用和 secret 一样显眼的调子；
+  // 「已停用」是用户自己的决定，不需要报警。
+  if (status === 'invalid') return 'secret'
+  if (status === 'revoked') return 'number'
   return 'text'
 }

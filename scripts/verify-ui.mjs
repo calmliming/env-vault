@@ -64,7 +64,13 @@ const pending = new Map()
 if (seedOk) {
   child = spawn(ELECTRON, ['.', `--remote-debugging-port=${PORT}`, `--user-data-dir=${sandbox}`], {
     cwd: process.cwd(),
-    stdio: ['ignore', 'pipe', 'pipe']
+    stdio: ['ignore', 'pipe', 'pipe'],
+    // 🔴 界面验收会真的去点那颗「验证」按钮，而它背后是应用里唯一一条
+    // 会发出站请求的路。这个变量让真传输直接拒发 —— 于是这条验收
+    // 既能走到验证流程，又保证一个字节都不出网。
+    // 附带的好处是它正好落在「没验出结论」那条分支上，
+    // 而那正是最需要被守住的一条：验证失败不许改凭据状态。
+    env: { ...process.env, ENVVAULT_BLOCK_NETWORK: '1' }
   })
   let stderr = ''
   child.stderr.on('data', (d) => {
@@ -141,7 +147,8 @@ async function runChecks() {
   check('没有通用 invoke 逃生口', isolation.genericInvoke === 'undefined', `typeof=${isolation.genericInvoke}`)
   check(
     'preload 只暴露白名单方法',
-    isolation.bridgeType === 'object' && isolation.bridgeKeys.length === 33,
+    // 阶段 3 收尾加了 validateCredential，33 → 34。
+    isolation.bridgeType === 'object' && isolation.bridgeKeys.length === 34,
     `${isolation.bridgeKeys.length} 个：${isolation.bridgeKeys.join(', ')}`
   )
 
@@ -559,6 +566,8 @@ async function runChecks() {
       keyCell: row?.querySelector('.value-cell .value')?.textContent.trim() ?? '',
       masked: !!row?.querySelector('.value.masked'),
       bindings: row?.querySelector('[data-action="toggle-bindings"]')?.textContent.trim() ?? '',
+      status: row?.querySelector('.type-tag')?.textContent.trim() ?? '',
+      validatedAt: row?.querySelector('.credential-validated-at')?.textContent.trim() ?? '',
       bodyHasKey: document.body.innerText.includes(${JSON.stringify(CREDENTIAL_KEY)}),
       // 六列的凭据表最容易把「操作」那一列挤出可视区。文档级横向滚动条
       // 由别处的断言守着，但内容区自己横向溢出同样是列被切掉。
@@ -585,13 +594,55 @@ async function runChecks() {
   check(
     '凭据表不横向溢出，操作列完整可见',
     credentialPage.paneOverflowsX === false &&
-      ['绑定', '轮换', '同步', '删除'].every((label) =>
+      ['验证', '绑定', '轮换', '同步', '删除'].every((label) =>
         credentialPage.actionsVisible.includes(label)
       ),
     `横向溢出=${credentialPage.paneOverflowsX} 操作=${(credentialPage.actionsVisible ?? []).join('/')}`
   )
+  check(
+    '新建的凭据如实显示「未验证」，没有假装验过',
+    credentialPage.status === '未验证' && credentialPage.validatedAt === '尚未验证过',
+    `状态=${credentialPage.status} / ${credentialPage.validatedAt}`
+  )
 
   await capture(CREDENTIALS_SHOT)
+
+  // --- 验证：点一次，确认失败不会被记成「Key 坏了」------------------------
+  //
+  // 这个进程带着 ENVVAULT_BLOCK_NETWORK=1（见上面的 spawn），所以真传输
+  // 直接拒发，走到「连不上」那条分支 —— 零出站流量，又正好落在
+  // 最需要守住的那一条上：**没验出结论时不许改状态**。
+  // 把网络故障记成「已失效」，用户离线点一次验证就会以为所有 Key 都废了。
+  const validated = await evaluate(`(async () => {
+    const wait = (ms) => new Promise(r => setTimeout(r, ms));
+    // toast 节点是常驻的，上一步的消息还留在里面 —— 所以等的是"内容变了"，
+    // 不是"内容非空"，否则会立刻拿到一条陈旧的提示。
+    const before = document.querySelector('.toast')?.textContent.trim() ?? '';
+    document.querySelector('[data-action="validate-credential"]').click();
+    for (let i = 0; i < 60; i++) {
+      await wait(100);
+      const now = document.querySelector('.toast')?.textContent.trim() ?? '';
+      const btn = document.querySelector('[data-action="validate-credential"]');
+      if (now !== before && btn && btn.textContent.trim() === '验证') break;
+    }
+    const row = document.querySelector('.credential-table tbody tr[data-credential]');
+    return {
+      status: row?.querySelector('.type-tag')?.textContent.trim() ?? '',
+      validatedAt: row?.querySelector('.credential-validated-at')?.textContent.trim() ?? '',
+      toast: document.querySelector('.toast')?.textContent.trim() ?? ''
+    };
+  })()`, true)
+
+  check(
+    '🔴 验证没问出结论时，凭据状态原地不动（网络不通 ≠ Key 失效）',
+    validated.status === '未验证' && validated.validatedAt === '尚未验证过',
+    `状态=${validated.status} / ${validated.validatedAt}`
+  )
+  check(
+    '并且如实告诉用户「这次没验出结论」，不说成验证失败',
+    validated.toast.includes('没验出结论') && validated.toast.includes('保持不变'),
+    validated.toast || '（没有提示）'
+  )
 
   const rotate = await evaluate(`(async () => {
     const wait = (ms) => new Promise(r => setTimeout(r, ms));
@@ -894,6 +945,17 @@ async function runChecks() {
       activity.labels.includes(label)
     ),
     [...new Set(activity.labels)].join('、')
+  )
+  check(
+    '🔴 那次向厂商验证在操作记录里留了痕（出站请求必须可审计）',
+    activity.labels.includes('向厂商验证'),
+    [...new Set(activity.labels)].filter((l) => l.includes('验证') || l.includes('凭据')).join('、') ||
+      '（记录里找不到验证动作）'
+  )
+  check(
+    '记录里的动作都是中文，没漏掉哪一类而露出原始标识',
+    activity.labels.every((label) => !label.includes('.')),
+    activity.labels.filter((label) => label.includes('.')).join('、') || '全部有中文标签'
   )
   check(
     '🔴 操作记录页面不含任何明文值（§5.5）',

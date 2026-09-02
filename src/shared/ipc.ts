@@ -9,6 +9,7 @@
  */
 
 import type { Sensitivity, ValueType } from './env-types.ts'
+import type { ValidationOutcome } from './provider-types.ts'
 
 export type { Sensitivity, ValueType }
 
@@ -35,6 +36,7 @@ export const CHANNELS = {
   credentialsCreate: 'credentials:create',
   credentialsUpdate: 'credentials:update',
   credentialsReveal: 'credentials:reveal',
+  credentialsValidate: 'credentials:validate',
   credentialsDelete: 'credentials:delete',
   credentialsBind: 'credentials:bind',
   credentialsUnbind: 'credentials:unbind',
@@ -367,7 +369,18 @@ export interface CredentialSuggestion {
   endpointPreview: string | null
 }
 
-export type CredentialStatus = 'unverified' | 'active' | 'revoked'
+/**
+ * 凭据状态。
+ *
+ * 🔴 `invalid` 和 `revoked` 是**两件事**，不能合并：
+ * 前者是厂商回了 401/403（「这把 Key 不行了」），后者是用户自己按的停用。
+ * 合成一个之后，界面上看到「已停用」再也回答不了「这是谁的决定」，
+ * 而这恰恰是用户下一步要做什么的依据。
+ *
+ * 只有真正问出了答案才会离开 `unverified` —— 网络不通、厂商限流、
+ * 地址填错都**不**改状态，理由见 `shared/provider-types.ts`。
+ */
+export type CredentialStatus = 'unverified' | 'active' | 'invalid' | 'revoked'
 
 export interface CredentialSummary {
   id: number
@@ -496,6 +509,27 @@ export interface CredentialRevealResult {
   apiKey: string
 }
 
+/**
+ * 一次验证的结果（开发计划 §7、§8）。
+ *
+ * 🔴 里面**没有 Key**，也没有请求的任何部分。Key 在主进程内存里解密之后
+ * 直接进了请求头，从不出现在返回值上 —— 和同步写盘那条路同一个模式。
+ */
+export interface CredentialValidationResult {
+  /** 验证完之后的凭据摘要。没结论时它和调用前完全一样。 */
+  credential: CredentialSummary
+  outcome: ValidationOutcome
+  /** 拿到了响应才有；连不上或超时是 null。 */
+  httpStatus: number | null
+  /** 给人看的一句话，由主进程构造，不来自厂商响应体也不来自原始异常。 */
+  message: string
+  /**
+   * 这次验证有没有问出答案。`false` 时状态和「最后验证时间」都没有被改动 ——
+   * 界面要如实说「这次没验出结论」，不能显示成验证失败。
+   */
+  conclusive: boolean
+}
+
 /** 监听到的文件变化，由主进程主动推送。 */
 export interface FileChangedEvent {
   fileId: number
@@ -562,6 +596,14 @@ export interface IpcContract {
   [CHANNELS.credentialsReveal]: {
     request: { credentialId: number }
     response: CredentialRevealResult
+  }
+  /**
+   * 🔴 全应用唯一会产生出站流量的通道。仅在用户显式点「验证」时调用 ——
+   * 没有任何自动触发的路径（计划 §7）。
+   */
+  [CHANNELS.credentialsValidate]: {
+    request: { credentialId: number }
+    response: CredentialValidationResult
   }
   [CHANNELS.credentialsDelete]: {
     request: { credentialId: number }
@@ -668,6 +710,8 @@ export interface EnvVaultApi {
   updateCredential(request: UpdateCredentialRequest): Promise<IpcResult<CredentialSummary>>
   /** 明文 Key。只有这一个通道会返回它，且每次调用都留痕。 */
   revealCredential(credentialId: number): Promise<IpcResult<CredentialRevealResult>>
+  /** 🔴 唯一会让应用发出站请求的方法。 */
+  validateCredential(credentialId: number): Promise<IpcResult<CredentialValidationResult>>
   deleteCredential(credentialId: number): Promise<IpcResult<{ removed: boolean }>>
   bindCredential(request: {
     credentialId: number

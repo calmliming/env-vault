@@ -14,6 +14,7 @@ import { BrowserWindow, app, dialog, ipcMain, type IpcMainInvokeEvent } from 'el
 import {
   CHANNELS,
   type ChannelName,
+  type CredentialStatus,
   type IpcErrorCode,
   type IpcRequest,
   type IpcResponse,
@@ -166,13 +167,21 @@ function asShortText(value: unknown, field: string, max: number, fallback?: stri
   return trimmed.slice(0, max)
 }
 
-const CREDENTIAL_STATUSES = new Set(['unverified', 'active', 'revoked'])
+/**
+ * 🔴 用户**能自己选**的状态只有这两个。
+ *
+ * `active` 和 `invalid` 是验证的**结论**，只能由 `credentialsValidate` 那条路
+ * 写进去。放进这个白名单等于允许渲染层在一个请求都没发出去的情况下
+ * 把凭据标成「可用」或「已失效」—— 那就是在假装做过实际没做的事，
+ * 而这个应用里没有任何一处这么干。
+ */
+const USER_SETTABLE_STATUSES = new Set<CredentialStatus>(['unverified', 'revoked'])
 
-function asCredentialStatus(value: unknown): 'unverified' | 'active' | 'revoked' {
-  if (typeof value !== 'string' || !CREDENTIAL_STATUSES.has(value)) {
-    throw new RepositoryError('INVALID_ARGUMENT', '未知的凭据状态')
+function asCredentialStatus(value: unknown): CredentialStatus {
+  if (typeof value !== 'string' || !USER_SETTABLE_STATUSES.has(value as CredentialStatus)) {
+    throw new RepositoryError('INVALID_ARGUMENT', '这个状态不能手动设置')
   }
-  return value as 'unverified' | 'active' | 'revoked'
+  return value as CredentialStatus
 }
 
 function asEntryValue(value: unknown): string {
@@ -359,6 +368,18 @@ export function registerIpcHandlers(): void {
   handle(CHANNELS.credentialsReveal, (request) => {
     const body = asRecord(request)
     return credentials.revealCredentialKey(asPositiveInt(body.credentialId, 'credentialId'))
+  })
+
+  /**
+   * 🔴 全应用唯一会发出站请求的通道，只在用户点「验证」时被调用。
+   *
+   * 这里**不接受**任何来自渲染层的传输层参数：能选择「怎么发」的只有主进程。
+   * 假传输是验收脚本直接调 `credentials.validateCredential` 时注入的，
+   * 不经过 IPC —— 让渲染层能左右出站行为等于把这道边界交还给页面。
+   */
+  handle(CHANNELS.credentialsValidate, (request) => {
+    const body = asRecord(request)
+    return credentials.validateCredential(asPositiveInt(body.credentialId, 'credentialId'))
   })
 
   handle(CHANNELS.credentialsDelete, (request) => {

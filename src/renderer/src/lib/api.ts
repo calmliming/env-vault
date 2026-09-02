@@ -89,6 +89,8 @@ export const bridge = {
     call(() => window.envvault.updateCredential(request)),
   revealCredential: (credentialId: number) =>
     call(() => window.envvault.revealCredential(credentialId)),
+  validateCredential: (credentialId: number) =>
+    call(() => window.envvault.validateCredential(credentialId)),
   deleteCredential: (credentialId: number) =>
     call(() => window.envvault.deleteCredential(credentialId)),
   bindCredential: (request: {

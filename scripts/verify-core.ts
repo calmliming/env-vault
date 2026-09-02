@@ -22,6 +22,8 @@ import * as cred from '../src/main/db/credentials'
 import * as vault from '../src/main/security/vault'
 import { VaultError } from '../src/main/security/vault'
 import { applyEdits, entriesOf, parseEnv, serializeEnv } from '../src/main/env/document.ts'
+import type { ValidationTransport } from '../src/main/providers/validate.ts'
+import { electronTransport } from '../src/main/net/transport'
 import { MASKED_PLACEHOLDER } from '../src/shared/ipc'
 
 interface Check {
@@ -36,6 +38,23 @@ function check(name: string, pass: boolean, detail: string): void {
 }
 
 // --- 运行模式 ---------------------------------------------------------------
+
+/**
+ * 🔴 这个进程一个字节都不许出网。
+ *
+ * 验收会走到「向厂商验证一把 Key」那条路，而那条路正常情况下是真的发包的。
+ * 下面每一处验证都注入了假传输，但「记得注入」是一条靠自觉的规矩 ——
+ * 一旦哪天有人加了一条断言忘了注入，后果是把测试用的假 Key 发到真实厂商去，
+ * 而且测试照样绿，没有任何东西会提醒你。
+ *
+ * 所以在真传输那一侧（`src/main/net/transport.ts`）留了一道见到这个变量
+ * 就拒发的拦，让「忘了注入」变成一次响亮的失败。本节末尾有一条断言
+ * 直接调真传输，确认这道拦不是摆设。
+ *
+ * 必须在 import 之后、任何验证发生之前设上。写在脚本里而不是 npm script 里，
+ * 是为了不给跨平台的环境变量语法引入一个 cross-env 依赖。
+ */
+process.env.ENVVAULT_BLOCK_NETWORK = '1'
 
 const keepIndex = process.argv.indexOf('--keep')
 const keepDir = keepIndex !== -1 ? process.argv[keepIndex + 1] : undefined
@@ -60,9 +79,10 @@ if (!hasUserDataDirSwitch) app.setPath('userData', sandbox)
 /** 被扫描的样例项目。放在沙箱里，界面验收会继续用它。 */
 const fixtureRoot = join(sandbox, 'fixture-project')
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   try {
-    run()
+    // `run` 从阶段 3 收尾起是异步的 —— 厂商验证那一节要 await 一个（假的）请求。
+    await run()
   } catch (error) {
     check('脚本未抛异常', false, error instanceof Error ? error.message : String(error))
   }
@@ -152,7 +172,7 @@ function buildFixture(): void {
   writeFileSync(join(fixtureRoot, 'node_modules', 'pkg', '.env'), 'GHOST=1\n')
 }
 
-function run(): void {
+async function run(): Promise<void> {
   // =========================================================================
   // 阶段 0：数据库与 Vault
   // =========================================================================
@@ -1211,6 +1231,194 @@ function run(): void {
     '未静默追加'
   )
 
+  // --- 厂商验证请求（阶段 3 最后一项，计划 §7 与 §8）------------------------
+  //
+  // 🔴 全程注入假传输，一个字节都不出网。本节末尾有一条断言直接调真传输，
+  // 确认 ENVVAULT_BLOCK_NETWORK 那道硬拦真的能触发 —— 否则「没出网」
+  // 这件事就只是一个假设，而假设和断言在测试报告上长得一模一样。
+
+  interface SeenRequest {
+    url: string
+    method: string
+    headers: Record<string, string>
+  }
+  const seenRequests: SeenRequest[] = []
+
+  /** 记下收到的请求，然后回一个指定的状态码。 */
+  function fakeTransport(status: number): ValidationTransport {
+    return async (request) => {
+      seenRequests.push({
+        url: request.url,
+        method: request.method,
+        headers: { ...request.headers }
+      })
+      return { status }
+    }
+  }
+
+  const statusOf = (id: number): { status: string; last_validated_at: number | null } =>
+    db
+      .prepare('SELECT status, last_validated_at FROM model_credentials WHERE id = ?')
+      .get<{ status: string; last_validated_at: number | null }>(id)!
+
+  check(
+    '发起验证之前，状态如实是「未验证」，验证时间为空',
+    statusOf(primary.id).status === 'unverified' && statusOf(primary.id).last_validated_at === null,
+    `status=${statusOf(primary.id).status} last_validated_at=${statusOf(primary.id).last_validated_at}`
+  )
+
+  // --- 通过：200 → active ---------------------------------------------------
+  seenRequests.length = 0
+  const passed = await cred.validateCredential(primary.id, fakeTransport(200))
+  check(
+    '验证通过后状态变为「可用」并记下验证时间',
+    passed.outcome === 'valid' &&
+      passed.conclusive &&
+      statusOf(primary.id).status === 'active' &&
+      statusOf(primary.id).last_validated_at !== null,
+    `outcome=${passed.outcome} status=${statusOf(primary.id).status}`
+  )
+  check(
+    '🔴 打的是元数据接口，不是推理接口（§7：避免无意产生推理费用）',
+    seenRequests.length === 1 &&
+      seenRequests[0]!.url.endsWith('/models') &&
+      seenRequests[0]!.method === 'GET',
+    `${seenRequests[0]?.method} ${seenRequests[0]?.url}`
+  )
+  check(
+    '🔴 Key 走请求头，不在 URL 里（URL 会被代理和服务端日志原样记下来）',
+    !seenRequests[0]!.url.includes('sk-ant-') &&
+      JSON.stringify(seenRequests[0]!.headers).includes(ROTATED_KEY),
+    `url=${seenRequests[0]?.url}`
+  )
+  check(
+    '🔴 验证的返回值里没有 Key —— 明文只进了请求头',
+    !JSON.stringify(passed).includes(ROTATED_KEY) && !JSON.stringify(passed).includes('sk-ant-'),
+    '返回值只有摘要、结论与一句话'
+  )
+
+  // --- 🔴 轮换之后，上一次验证的结论必须作废 --------------------------------
+  // 「可用」说的是某一把具体的 Key。换了一把之后还挂着它，
+  // 等于拿旧 Key 的体检报告给新 Key 背书。
+  const REVALIDATE_KEY = 'sk-ant-api03-revalidate-0123456789abcdef'
+  cred.updateCredential({ credentialId: primary.id, apiKey: REVALIDATE_KEY })
+  check(
+    '🔴 轮换 Key 之后状态退回「未验证」，验证时间一并清空',
+    statusOf(primary.id).status === 'unverified' && statusOf(primary.id).last_validated_at === null,
+    `status=${statusOf(primary.id).status} last_validated_at=${statusOf(primary.id).last_validated_at}`
+  )
+
+  // --- 拒绝：401 → invalid，且不是 revoked ----------------------------------
+  const rejected = await cred.validateCredential(primary.id, fakeTransport(401))
+  check(
+    '🔴 厂商拒绝记为「已失效」，不是用户按的「已停用」',
+    rejected.outcome === 'invalid' &&
+      rejected.conclusive &&
+      statusOf(primary.id).status === 'invalid',
+    `outcome=${rejected.outcome} status=${statusOf(primary.id).status}`
+  )
+  check(
+    '被拒绝时说清楚了是厂商拒的，并带上状态码',
+    rejected.message.includes('拒绝') && rejected.httpStatus === 401,
+    rejected.message
+  )
+
+  // --- 🔴 没结论的一律不许动状态 --------------------------------------------
+  //
+  // 这是这一层最容易写错的地方：把网络超时记成「Key 失效」，用户离线点一次
+  // 验证就会看到所有凭据被标成失效 —— 而那正是他最需要这些 Key 的时候。
+  //
+  // ⚠️ 先把状态验回 `active` 再跑这一组，不是多此一举：
+  // 如果从 `invalid` 起步，一次错误的写入正好也写 `invalid`，而
+  // last_validated_at 又可能落在同一毫秒里 —— 于是「改了」和「没改」
+  // 长得一模一样，断言够不着它要守的分支。（这是把 bug 放回去跑一遍时
+  // 发现的：四个用例里「连不上」那条当时没红。）
+  // 从 `active` 起步，任何错误写入都会翻成 `invalid`，一眼可见。
+  // 顺带这也是更真实的场景：昨天验过是可用的，今天离线点一次。
+  await cred.validateCredential(primary.id, fakeTransport(200))
+  const beforeInconclusive = statusOf(primary.id)
+  check(
+    '（前置）已经是「可用」，下面任何一次错误写入都会翻成「已失效」',
+    beforeInconclusive.status === 'active',
+    `status=${beforeInconclusive.status}`
+  )
+  const inconclusiveCases: [string, ValidationTransport][] = [
+    [
+      '连不上',
+      async () => {
+        throw new Error('getaddrinfo ENOTFOUND api.anthropic.com')
+      }
+    ],
+    ['厂商 500', fakeTransport(500)],
+    ['限流 429', fakeTransport(429)],
+    ['地址错 404', fakeTransport(404)]
+  ]
+  const mutatedBy: string[] = []
+  const outcomes: string[] = []
+  for (const [label, transport] of inconclusiveCases) {
+    const report = await cred.validateCredential(primary.id, transport)
+    outcomes.push(`${label}→${report.outcome}`)
+    const after = statusOf(primary.id)
+    if (
+      report.conclusive ||
+      after.status !== beforeInconclusive.status ||
+      after.last_validated_at !== beforeInconclusive.last_validated_at
+    ) {
+      mutatedBy.push(label)
+    }
+  }
+  check(
+    '🔴 没验出结论时，状态和验证时间一个都不动',
+    mutatedBy.length === 0,
+    mutatedBy.length === 0 ? outcomes.join(' / ') : `被改动了: ${mutatedBy.join('、')}`
+  )
+  check(
+    '没结论的提示语说的是「这次没问出来」，不是「你的 Key 坏了」',
+    (await cred.validateCredential(primary.id, fakeTransport(500))).message.includes('没验出结论'),
+    '措辞不会误导用户去换 Key'
+  )
+
+  // --- Gemini：Key 必须走请求头而不是 ?key= ---------------------------------
+  // 单独验一条是因为 Gemini 是唯一一家官方示例用查询串传 Key 的，
+  // 而查询串会被代理、CDN 和服务端访问日志原样记下来。
+  const geminiKey = 'AIzaSyA01234567890123456789012345678901'
+  const gemini = cred.createCredential({
+    providerId: 'gemini',
+    credentialName: 'verify-gemini',
+    endpoint: 'https://generativelanguage.googleapis.com/v1beta',
+    apiKey: geminiKey
+  })
+  seenRequests.length = 0
+  await cred.validateCredential(gemini.id, fakeTransport(200))
+  check(
+    '🔴 Gemini 的 Key 也走请求头，没有拼进查询串',
+    seenRequests.length === 1 &&
+      !seenRequests[0]!.url.includes(geminiKey) &&
+      !seenRequests[0]!.url.includes('key=') &&
+      seenRequests[0]!.headers['x-goog-api-key'] === geminiKey,
+    seenRequests[0]?.url ?? '（没发出请求）'
+  )
+  // 用完就删：留着会让后面「凭据都删干净了」和界面那条「列表 1 条」都变红。
+  cred.deleteCredential(gemini.id)
+
+  // --- 🔴 那道「禁止出网」的拦是真的能触发的 --------------------------------
+  // 上面所有验证都靠注入假传输才没出网。这条断言直接调真传输，
+  // 确认忘了注入时会失败而不是静默发包。没有这条，「没出网」只是一个假设。
+  let blocked = ''
+  try {
+    await electronTransport(
+      { url: 'https://api.anthropic.com/v1/models', method: 'GET', headers: {} },
+      new AbortController().signal
+    )
+  } catch (error) {
+    blocked = error instanceof Error ? error.message : String(error)
+  }
+  check(
+    '🔴 ENVVAULT_BLOCK_NETWORK 下真传输直接拒发（忘了注入假传输会响亮地失败）',
+    blocked.includes('ENVVAULT_BLOCK_NETWORK'),
+    blocked || '（真传输没有拒绝，这个进程可能真的发过包）'
+  )
+
   // --- 删除变量时绑定要跟着走 -----------------------------------------------
   const bindingsBeforeDelete = cred.previewCredentialSync(primary.id).targets.length
   repo.deleteEntry(entryOf('ANTHROPIC_API_KEY').id, diskHashOf('.env.local'))
@@ -1240,16 +1448,28 @@ function run(): void {
     .listActivity(300)
     .filter((r) => r.action.startsWith('credential.'))
   check(
-    '凭据的增删改绑同步都留了记录',
+    '凭据的增删改绑同步与验证都留了记录',
     ['credential.create', 'credential.bind', 'credential.sync', 'credential.rotate',
-     'credential.delete'].every((action) => credentialLog.some((r) => r.action === action)),
+     'credential.validate', 'credential.delete'].every((action) =>
+      credentialLog.some((r) => r.action === action)
+    ),
     [...new Set(credentialLog.map((r) => r.action))].join('、')
   )
   check(
-    '🔴 凭据操作记录里没有 Key 明文',
+    '验证的记录如实区分「有结论」和「没结论」',
+    credentialLog.some((r) => r.action === 'credential.validate' && r.detail?.includes('HTTP 401')) &&
+      credentialLog.some(
+        (r) => r.action === 'credential.validate' && r.detail?.includes('没有结论')
+      ),
+    '两类结果在审计记录里分得开'
+  )
+  check(
+    '🔴 凭据操作记录里没有 Key 明文，也没有调用地址',
     !JSON.stringify(credentialLog).includes('sk-ant-api03') &&
+      !JSON.stringify(credentialLog).includes('AIza') &&
+      !JSON.stringify(credentialLog).includes('anthropic.com') &&
       !NEEDLES.some((needle) => JSON.stringify(credentialLog).includes(needle)),
-    '只记厂商、凭据名与数量'
+    '只记厂商、凭据名、结论与状态码'
   )
 
   // 整库再扫一遍：阶段 3 新增了两张表，明文断言必须覆盖到它们。
@@ -1257,7 +1477,7 @@ function run(): void {
     .filter((path) => existsSync(path))
     .map((path) => readFileSync(path).toString('latin1'))
     .join('')
-  const credentialNeedles = ['sk-ant-api03-original', ROTATED_KEY, ...NEEDLES]
+  const credentialNeedles = ['sk-ant-api03-original', ROTATED_KEY, REVALIDATE_KEY, ...NEEDLES]
   const leakedAfter = credentialNeedles.filter((needle) => dbBytesAfterCredentials.includes(needle))
   check(
     '🔴 加上凭据两张表之后，数据库文件里仍然搜不到任何明文',

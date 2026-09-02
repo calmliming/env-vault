@@ -26,6 +26,7 @@ import {
   type CredentialSummary,
   type CredentialSyncPreview,
   type CredentialSyncResult,
+  type CredentialValidationResult,
   type FileChangedEvent,
   type ProviderInfo,
   type UpdateCredentialRequest,
@@ -100,6 +101,11 @@ const api: EnvVaultApi = {
   revealCredential: (credentialId: number) =>
     ipcRenderer.invoke(CHANNELS.credentialsReveal, { credentialId }) as Promise<
       IpcResult<CredentialRevealResult>
+    >,
+  /** 🔴 唯一会让应用发出站请求的桥。只有用户点「验证」时才会走到。 */
+  validateCredential: (credentialId: number) =>
+    ipcRenderer.invoke(CHANNELS.credentialsValidate, { credentialId }) as Promise<
+      IpcResult<CredentialValidationResult>
     >,
   deleteCredential: (credentialId: number) =>
     ipcRenderer.invoke(CHANNELS.credentialsDelete, { credentialId }) as Promise<
