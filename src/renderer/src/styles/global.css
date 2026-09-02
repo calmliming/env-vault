@@ -410,6 +410,18 @@ h1 { font-size: 35px; letter-spacing: 0; line-height: 1.05; margin: 8px 0 9px; }
 .danger-text { color: #9c4a35; }
 .danger-text:hover { border-color: #9c4a35; }
 
+/* 轮换前的影响范围 */
+.impact-box {
+  border: 1px solid var(--line);
+  background: var(--canvas);
+  padding: 12px 14px;
+  margin: 0 0 14px;
+}
+.impact-box > strong { display: block; font-size: 12px; margin-bottom: 8px; }
+.impact-list { list-style: none; margin: 0 0 8px; padding: 0; display: grid; gap: 6px; }
+.impact-list li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; font-size: 11px; }
+.impact-path { color: var(--muted); font: 10px var(--mono); }
+
 .binding-row > td { background: var(--canvas); padding: 12px 18px; }
 .binding-list { display: grid; gap: 8px; }
 .binding-item { display: flex; align-items: center; justify-content: space-between; gap: 12px; }

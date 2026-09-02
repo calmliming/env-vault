@@ -34,6 +34,8 @@ import {
   type ScannedFile
 } from '../env/scan.ts'
 import { WriteConflictError, writeEnvFileAtomic } from '../env/write.ts'
+import { copyWithAutoClear } from '../clipboard/index.ts'
+import type { ClipboardPort } from '../clipboard/index.ts'
 import { getProvider } from '../providers/index.ts'
 import {
   MASKED_PLACEHOLDER,
@@ -514,6 +516,49 @@ export function revealEntry(entryId: number): RevealResult {
     key: row.key,
     value: row.encrypted_value ? vault.decryptValue(Buffer.from(row.encrypted_value)) : ''
   }
+}
+
+/**
+ * 把配置值复制到系统剪贴板，并安排 30 秒后清理（计划 §7）。
+ *
+ * 🔴 **返回值里没有明文** —— 只有一个 id 进来、一个"多久之后清"出去。
+ * 复制这条路上明文完全不进渲染层，这是它和 `revealEntry` 的根本区别
+ * （后者必须过桥，因为要显示在屏幕上）。
+ *
+ * 记 `entry.copy` 而不是复用 `entry.reveal`：复制和查看是两种不同的暴露方式，
+ * 审计时要分得开 —— **复制出去的那一份会离开本应用**，而查看不会。
+ */
+export async function copyEntryValue(entryId: number, port: ClipboardPort): Promise<number> {
+  requireUnlocked()
+
+  const row = getDatabase()
+    .prepare(
+      `SELECT c.key, c.encrypted_value, f.environment, f.project_id
+       FROM config_entries c
+       JOIN env_files f ON f.id = c.env_file_id
+       WHERE c.id = ?`
+    )
+    .get<{
+      key: string
+      encrypted_value: Uint8Array | null
+      environment: string
+      project_id: number
+    }>(entryId)
+  if (!row) throw new RepositoryError('NOT_FOUND', '配置项不存在')
+
+  const value = row.encrypted_value ? vault.decryptValue(Buffer.from(row.encrypted_value)) : ''
+  const clearAfterMs = await copyWithAutoClear(value, port)
+
+  logActivity({
+    action: 'entry.copy',
+    projectId: row.project_id,
+    environment: row.environment,
+    targetKind: 'entry',
+    targetRef: row.key,
+    detail: `${Math.round(clearAfterMs / 1000)} 秒后自动清理剪贴板`
+  })
+
+  return clearAfterMs
 }
 
 /**

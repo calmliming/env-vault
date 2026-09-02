@@ -303,6 +303,7 @@ const ACTION_LABELS: Record<string, string> = {
   'project.rescan': '重新扫描',
   'project.remove': '移除项目',
   'entry.reveal': '显示敏感值',
+  'entry.copy': '复制到剪贴板',
   'entry.update': '编辑变量',
   'entry.delete': '删除变量',
   'file.adopt': '以磁盘为准',
@@ -311,6 +312,7 @@ const ACTION_LABELS: Record<string, string> = {
   'credential.update': '修改凭据',
   'credential.rotate': '轮换 Key',
   'credential.reveal': '显示 Key',
+  'credential.copy': '复制 Key 到剪贴板',
   'credential.validate': '向厂商验证',
   'credential.bind': '绑定凭据',
   'credential.unbind': '解除绑定',
@@ -333,6 +335,10 @@ const ORANGE_ACTIONS = new Set([
   // 读出过明文
   'entry.reveal',
   'credential.reveal',
+  // 🔴 复制比查看更值得标出来：复制出去的那一份**离开了本应用**，
+  // 而查看只是在屏幕上停留了一会儿。
+  'entry.copy',
+  'credential.copy',
   // 改过用户的磁盘文件
   'entry.delete',
   'file.restore',

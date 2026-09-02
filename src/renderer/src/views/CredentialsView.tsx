@@ -129,18 +129,41 @@ export function CredentialsView({
     showToast('已解除绑定，磁盘文件未改动')
   }
 
+  /**
+   * 🔴 复制走主进程 —— 明文**不为了复制而过桥**。
+   *
+   * 这里只送一个 id 过去，主进程解密之后直接写进系统剪贴板，
+   * 回来的只有「多久之后会清」。和「显示」那条路是两回事：
+   * 显示必须过桥（值要出现在屏幕上），复制不必。
+   */
   async function copyKey(credential: CredentialSummary): Promise<void> {
-    const result = await bridge.revealCredential(credential.id)
+    const result = await bridge.copyCredentialKey(credential.id)
     if (!result.ok) {
       showToast(result.message)
       return
     }
-    try {
-      await navigator.clipboard.writeText(result.data.apiKey)
-      showToast('已复制到剪贴板，自动清理将在阶段 4 接入')
-    } catch {
-      showToast('复制失败，请检查系统剪贴板权限')
+    const seconds = Math.round(result.data.clearAfterMs / 1000)
+    showToast(`已复制到剪贴板，${seconds} 秒后自动清理（期间复制了别的就不动它）`)
+  }
+
+  /**
+   * 停用 / 启用。停用之后主进程会拒绝同步和验证 ——
+   * 「停用」是用户明确说过「这把不要了」，此后还把它写进 `.env` 文件
+   * 就是在替他撤回那个决定。
+   */
+  async function toggleRevoked(credential: CredentialSummary): Promise<void> {
+    const nextStatus = credential.status === 'revoked' ? 'unverified' : 'revoked'
+    const result = await bridge.updateCredential({ credentialId: credential.id, status: nextStatus })
+    if (!result.ok) {
+      showToast(result.message)
+      return
     }
+    await store.reload()
+    showToast(
+      nextStatus === 'revoked'
+        ? '已停用。同步和验证都会被拒绝，磁盘文件未改动。'
+        : '已启用，状态回到「未验证」。'
+    )
   }
 
   return (
@@ -215,6 +238,9 @@ export function CredentialsView({
               {credentials.map((credential) => {
                 const plain = revealed.get(credential.id)
                 const isOpen = expanded === credential.id
+                // 停用之后同步和验证都要挡住。这里挡是为了不把用户引到死路上，
+                // 主进程侧还有一道独立的守卫，那才是规矩真正成立的地方。
+                const revoked = credential.status === 'revoked'
                 return (
                   // key 要落在 map 返回的最外层节点上，也就是这个 Fragment，
                   // 放到里面的 <tr> 上 React 认不到。
@@ -284,8 +310,12 @@ export function CredentialsView({
                             className="outline-btn tiny"
                             data-action="validate-credential"
                             onClick={() => void validate(credential)}
-                            disabled={validating !== null}
-                            title="向厂商的模型列表接口发一次请求，确认这把 Key 现在能不能用"
+                            disabled={validating !== null || revoked}
+                            title={
+                              revoked
+                                ? '已停用的凭据不会再发验证请求'
+                                : '向厂商的模型列表接口发一次请求，确认这把 Key 现在能不能用'
+                            }
                           >
                             {validating === credential.id ? '验证中…' : '验证'}
                           </button>
@@ -299,14 +329,28 @@ export function CredentialsView({
                             className="outline-btn tiny"
                             data-action="sync-credential"
                             onClick={() => onSync(credential)}
-                            disabled={credential.bindingCount === 0}
+                            disabled={credential.bindingCount === 0 || revoked}
                             title={
-                              credential.bindingCount === 0
-                                ? '还没有绑定任何项目，没有可同步的地方'
-                                : '预览并同步到全部绑定'
+                              revoked
+                                ? '已停用的 Key 不会被写进项目文件'
+                                : credential.bindingCount === 0
+                                  ? '还没有绑定任何项目，没有可同步的地方'
+                                  : '预览并同步到全部绑定'
                             }
                           >
                             同步
+                          </button>
+                          <button
+                            className="outline-btn tiny"
+                            data-action="toggle-revoked"
+                            onClick={() => void toggleRevoked(credential)}
+                            title={
+                              revoked
+                                ? '重新启用，状态回到「未验证」'
+                                : '停用之后同步和验证都会被拒绝，磁盘文件不受影响'
+                            }
+                          >
+                            {revoked ? '启用' : '停用'}
                           </button>
                           <button
                             className="outline-btn tiny danger-text"

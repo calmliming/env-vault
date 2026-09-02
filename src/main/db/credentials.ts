@@ -54,6 +54,8 @@ import {
 import { isConclusive, runValidation } from '../providers/validate.ts'
 import type { ValidationTransport } from '../providers/validate.ts'
 import { electronTransport } from '../net/transport'
+import { copyWithAutoClear } from '../clipboard/index.ts'
+import type { ClipboardPort } from '../clipboard/index.ts'
 import type {
   CreateCredentialRequest,
   CredentialBindingView,
@@ -64,6 +66,7 @@ import type {
   CredentialSyncPreview,
   CredentialSyncResult,
   CredentialValidationResult,
+  CredentialVersion,
   ProviderInfo,
   SyncOutcome,
   SyncTarget,
@@ -202,6 +205,77 @@ export function suggestCredentials(projectId: number): CredentialSuggestion[] {
 }
 
 // ---------------------------------------------------------------------------
+// 版本历史（阶段 4b）
+// ---------------------------------------------------------------------------
+
+/**
+ * 开一代新的 Key。调用方负责先把上一代关掉。
+ *
+ * 🔴 `credential_versions` 里**没有密文那一列**，所以这里也没什么可存的 ——
+ * 只有指纹和末四位。理由见迁移 005：留着旧密钥是纯粹的负债，
+ * 而轮换的全部意义就是让旧的那把作废。
+ */
+function openVersion(credentialId: number, apiKey: string, now: number): void {
+  const db = getDatabase()
+  const current =
+    db
+      .prepare(
+        'SELECT COALESCE(MAX(version), 0) AS v FROM credential_versions WHERE credential_id = ?'
+      )
+      .get<{ v: number }>(credentialId)?.v ?? 0
+
+  db.prepare(
+    `INSERT INTO credential_versions
+       (credential_id, version, fingerprint, last_four, created_at, revoked_at)
+     VALUES (?, ?, ?, ?, ?, NULL)`
+  ).run(credentialId, current + 1, fingerprintOf(apiKey), lastFourOf(apiKey), now)
+}
+
+/**
+ * 关掉当前这一代。
+ *
+ * 只在**轮换**时调用。用户按「停用」改的是 `model_credentials.status`，
+ * 不动版本行 —— 那把 Key 还是那把 Key，只是这条凭据被搁置了。
+ * 两件事混进 `revoked_at` 一列，之后就再也分不开了。
+ */
+function closeCurrentVersion(credentialId: number, now: number): void {
+  getDatabase()
+    .prepare(
+      'UPDATE credential_versions SET revoked_at = ? WHERE credential_id = ? AND revoked_at IS NULL'
+    )
+    .run(now, credentialId)
+}
+
+/**
+ * 这条凭据换过几次 Key、每一代是什么时候作废的。
+ *
+ * 🔴 返回值里只有指纹和末四位，没有任何一代的 Key ——
+ * 库里本来就没存。指纹的用处是**在别处认出残留的旧 Key**
+ * （另一个项目、一份旧备份里出现同样的指纹，说明那把作废的 Key 还在用）。
+ */
+export function listCredentialVersions(credentialId: number): CredentialVersion[] {
+  return getDatabase()
+    .prepare(
+      `SELECT version, fingerprint, last_four, created_at, revoked_at
+       FROM credential_versions WHERE credential_id = ? ORDER BY version DESC`
+    )
+    .all<{
+      version: number
+      fingerprint: string
+      last_four: string
+      created_at: number
+      revoked_at: number | null
+    }>(credentialId)
+    .map((row) => ({
+      version: row.version,
+      fingerprint: row.fingerprint,
+      lastFour: row.last_four,
+      createdAt: row.created_at,
+      revokedAt: row.revoked_at
+    }))
+}
+
+// ---------------------------------------------------------------------------
 // 凭据 CRUD
 // ---------------------------------------------------------------------------
 
@@ -269,6 +343,24 @@ function requireCredential(credentialId: number): CredentialRow {
   return row
 }
 
+/**
+ * 🔴 已停用的凭据不许再往外用。
+ *
+ * 「停用」是用户明确说过「这把不要了」。此后还把它写进 `.env` 文件、
+ * 或者拿去向厂商验证，都是在替他撤回那个决定。
+ *
+ * 界面上同时会禁用入口并说明原因，但**这里才是真正的守卫** ——
+ * 和「归凭据管的变量不能就地编辑」同一个模式：界面挡是为了不把用户
+ * 引到死路上，主进程挡才是那条规矩真正成立的地方。
+ */
+function requireNotRevoked(row: CredentialRow, attempted: string): void {
+  if (row.status !== 'revoked') return
+  throw new RepositoryError(
+    'PATH_REJECTED',
+    `凭据「${row.credential_name}」已停用，不能${attempted}。要继续用请先启用它。`
+  )
+}
+
 export function createCredential(request: CreateCredentialRequest): CredentialSummary {
   requireUnlocked()
 
@@ -304,6 +396,8 @@ export function createCredential(request: CreateCredentialRequest): CredentialSu
         now
       )
     const id = Number(inserted.lastInsertRowid)
+    // 第一代。和凭据在同一个事务里 —— 一条没有 v1 的凭据是坏数据。
+    openVersion(id, apiKey, now)
     if (request.bind) insertBinding(id, request.bind)
     return id
   })
@@ -364,17 +458,24 @@ export function updateCredential(request: UpdateCredentialRequest): CredentialSu
   if (request.apiKey !== undefined) {
     const apiKey = request.apiKey.trim()
     if (apiKey === '') throw new RepositoryError('INVALID_ARGUMENT', 'API Key 不能为空')
-    db.prepare(
-      `UPDATE model_credentials
-       SET encrypted_api_key = ?, fingerprint = ?, last_four = ?,
-           status = 'unverified', last_validated_at = NULL
-       WHERE id = ?`
-    ).run(
-      vault.encryptValue(apiKey),
-      fingerprintOf(apiKey),
-      lastFourOf(apiKey),
-      request.credentialId
-    )
+    const now = Date.now()
+    db.transaction(() => {
+      db.prepare(
+        `UPDATE model_credentials
+         SET encrypted_api_key = ?, fingerprint = ?, last_four = ?,
+             status = 'unverified', last_validated_at = NULL
+         WHERE id = ?`
+      ).run(
+        vault.encryptValue(apiKey),
+        fingerprintOf(apiKey),
+        lastFourOf(apiKey),
+        request.credentialId
+      )
+      // 上一代作废，新的一代开张。两步必须同一个事务：
+      // 中间断掉会留下两代都是"当前"或者一代都没有的库。
+      closeCurrentVersion(request.credentialId, now)
+      openVersion(request.credentialId, apiKey, now)
+    })
     // 🔴 换了 Key，之前那次验证的结论就作废了 —— 状态退回 unverified，
     // 验证时间**一并清空**。只退状态不清时间的话，界面上会出现
     // 「未验证」旁边挂着一个「验于 3 分钟前」，而那句话说的是另一把 Key。
@@ -439,6 +540,7 @@ export async function validateCredential(
 ): Promise<CredentialValidationResult> {
   requireUnlocked()
   const row = requireCredential(credentialId)
+  requireNotRevoked(row, '向厂商发验证请求')
 
   const provider = getProvider(row.provider_name)
   if (!provider) throw new RepositoryError('INVALID_ARGUMENT', '未知的厂商')
@@ -476,6 +578,36 @@ export async function validateCredential(
     message: report.message,
     conclusive
   }
+}
+
+/**
+ * 把 Key 复制到系统剪贴板，并安排 30 秒后清理（计划 §7）。
+ *
+ * 🔴 **返回值里没有明文，参数里也没有** —— 只有一个 id 进来、
+ * 一个"多久之后清"出去。复制这条路上明文完全不进渲染层，
+ * 这是它和 `revealCredentialKey` 的根本区别（后者必须过桥，因为要显示）。
+ *
+ * 记一条 `credential.copy` 而不是复用 `credential.reveal`：
+ * 复制和查看是两种不同的暴露方式，审计时要分得开 ——
+ * **复制出去的那一份会离开本应用**，而查看不会。
+ */
+export async function copyCredentialKey(
+  credentialId: number,
+  port: ClipboardPort
+): Promise<number> {
+  requireUnlocked()
+  const row = requireCredential(credentialId)
+
+  const clearAfterMs = await copyWithAutoClear(decrypt(row.encrypted_api_key), port)
+
+  logActivity({
+    action: 'credential.copy',
+    targetKind: 'credential',
+    targetRef: `${getProvider(row.provider_name)?.providerName ?? row.provider_name} / ${row.credential_name}`,
+    detail: `${Math.round(clearAfterMs / 1000)} 秒后自动清理剪贴板`
+  })
+
+  return clearAfterMs
 }
 
 /**
@@ -779,6 +911,7 @@ export function syncCredential(
 ): CredentialSyncResult {
   requireUnlocked()
   const credential = requireCredential(credentialId)
+  requireNotRevoked(credential, '把一把已停用的 Key 写进项目文件')
   const apiKey = decrypt(credential.encrypted_api_key)
 
   const bindings = new Map(bindingRowsOf(credentialId).map((row) => [row.id, row]))

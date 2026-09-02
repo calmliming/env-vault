@@ -107,19 +107,20 @@ export function OverviewView({
   }
 
   async function copyValue(entry: ConfigEntryView): Promise<void> {
-    // 非敏感项的明文本来就在 displayValue 里，但仍然统一走 reveal ——
-    // 这样"复制"这个动作在操作记录里不会漏记（§5.5）。
-    const result = await bridge.revealEntry(entry.id)
+    // 🔴 复制走主进程 —— 明文**不为了复制而过桥**。
+    // 只送一个 id 过去，主进程解密之后直接写进系统剪贴板，
+    // 回来的只有「多久之后会清」。「显示」那条路必须过桥（值要上屏），复制不必。
+    //
+    // 非敏感项的值本来就在 displayValue 里，但仍然统一走这条路 ——
+    // 这样"复制"在操作记录里不会漏记（§5.5），记的是 entry.copy 而不是 reveal：
+    // 复制出去的那一份会离开本应用，查看不会，审计时要分得开。
+    const result = await bridge.copyEntryValue(entry.id)
     if (!result.ok) {
       showToast(result.message)
       return
     }
-    try {
-      await navigator.clipboard.writeText(result.data.value)
-      showToast('已复制到剪贴板，自动清理将在阶段 4 接入')
-    } catch {
-      showToast('复制失败，请检查系统剪贴板权限')
-    }
+    const seconds = Math.round(result.data.clearAfterMs / 1000)
+    showToast(`已复制到剪贴板，${seconds} 秒后自动清理（期间复制了别的就不动它）`)
   }
 
   /**

@@ -18,6 +18,7 @@ import {
   type ActivityRecord,
   type AdoptResult,
   type AppHealth,
+  type ClipboardCopyResult,
   type ConfigEntryView,
   type CreateCredentialRequest,
   type CredentialBindingView,
@@ -27,6 +28,7 @@ import {
   type CredentialSyncPreview,
   type CredentialSyncResult,
   type CredentialValidationResult,
+  type CredentialVersion,
   type FileChangedEvent,
   type ProviderInfo,
   type UpdateCredentialRequest,
@@ -136,6 +138,22 @@ const api: EnvVaultApi = {
   ) =>
     ipcRenderer.invoke(CHANNELS.credentialsSync, { credentialId, targets }) as Promise<
       IpcResult<CredentialSyncResult>
+    >,
+  listCredentialVersions: (credentialId: number) =>
+    ipcRenderer.invoke(CHANNELS.credentialsVersions, { credentialId }) as Promise<
+      IpcResult<CredentialVersion[]>
+    >,
+  /**
+   * 🔴 复制走主进程 —— 明文**不为了复制而过桥**。
+   * 只有 id 进去、「多久之后清」出来。
+   */
+  copyEntryValue: (entryId: number) =>
+    ipcRenderer.invoke(CHANNELS.clipboardCopyEntry, { entryId }) as Promise<
+      IpcResult<ClipboardCopyResult>
+    >,
+  copyCredentialKey: (credentialId: number) =>
+    ipcRenderer.invoke(CHANNELS.clipboardCopyCredential, { credentialId }) as Promise<
+      IpcResult<ClipboardCopyResult>
     >,
   /** 🔴 唯一会让应用执行外部程序的桥（起 git 子进程做只读检查）。 */
   scanSecurity: (projectId: number) =>

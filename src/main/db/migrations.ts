@@ -219,11 +219,58 @@ const migration004: Migration = {
   }
 }
 
+/**
+ * 005：凭据的版本历史（开发计划 §9 阶段 4「凭据版本、轮换、停用」）。
+ *
+ * 🔴 **这张表里没有 `encrypted_api_key`，这是刻意的。**
+ *
+ * 留着旧密钥是纯粹的负债：轮换的全部意义就是让旧的那把作废，
+ * 而一个"能翻出所有历史 Key 的数据库"把每一次轮换都变成了在扩大攻击面 ——
+ * 用户越是勤于轮换，泄漏一次库文件的后果就越严重。这是完全反过来的激励。
+ *
+ * 只存指纹和末四位。它们回答了历史记录唯一该回答的问题：
+ * **「我什么时候换的、换掉的是哪一把」**——
+ * 指纹足以在别处（另一个项目、一份旧备份）认出残留的旧 Key，
+ * 而从指纹反推不回 Key 本身（它是 HMAC，见 PHASE-3 §4）。
+ *
+ * `revoked_at` 只在**轮换**时写：这一代被下一代取代。
+ * 用户按「停用」改的是 `model_credentials.status`，**不动版本行** ——
+ * 那把 Key 还是那把 Key，只是这条凭据被搁置了。
+ * 两件事混进一列，之后就再也分不开了。
+ *
+ * 存量凭据补一条 v1：不补的话老数据的历史是空的，
+ * 界面上会显示成"从没轮换过"，而那不准确 —— 它只是没被记录过。
+ */
+const migration005: Migration = {
+  version: 5,
+  name: 'credential-versions',
+  up(db) {
+    db.exec(`
+      CREATE TABLE credential_versions (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        credential_id INTEGER NOT NULL REFERENCES model_credentials(id) ON DELETE CASCADE,
+        version       INTEGER NOT NULL,
+        fingerprint   TEXT    NOT NULL,
+        last_four     TEXT    NOT NULL,
+        created_at    INTEGER NOT NULL,
+        revoked_at    INTEGER,
+        UNIQUE (credential_id, version)
+      );
+      CREATE INDEX idx_credential_versions ON credential_versions(credential_id);
+
+      INSERT INTO credential_versions
+        (credential_id, version, fingerprint, last_four, created_at, revoked_at)
+      SELECT id, 1, fingerprint, last_four, created_at, NULL FROM model_credentials;
+    `)
+  }
+}
+
 export const MIGRATIONS: readonly Migration[] = [
   migration001,
   migration002,
   migration003,
-  migration004
+  migration004,
+  migration005
 ]
 
 export const LATEST_VERSION = MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0)

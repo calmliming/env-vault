@@ -148,8 +148,9 @@ async function runChecks() {
   check('没有通用 invoke 逃生口', isolation.genericInvoke === 'undefined', `typeof=${isolation.genericInvoke}`)
   check(
     'preload 只暴露白名单方法',
-    // 阶段 3 收尾加了 validateCredential（33 → 34），阶段 4a 加了 scanSecurity（→ 35）。
-    isolation.bridgeType === 'object' && isolation.bridgeKeys.length === 35,
+    // 阶段 3 收尾 +validateCredential（33→34）、4a +scanSecurity（→35）、
+    // 4b +listCredentialVersions/copyEntryValue/copyCredentialKey（→38）。
+    isolation.bridgeType === 'object' && isolation.bridgeKeys.length === 38,
     `${isolation.bridgeKeys.length} 个：${isolation.bridgeKeys.join(', ')}`
   )
 
@@ -654,6 +655,24 @@ async function runChecks() {
       await wait(100);
       if (document.querySelector('#credential-key')) break;
     }
+    // 阶段 4b：影响范围要在**按下确认之前**就摆出来。
+    // 它是异步查回来的，所以先等它出现。
+    for (let i = 0; i < 40; i++) {
+      await wait(100);
+      const box = document.querySelector('[data-impact]');
+      if (box && !box.innerText.includes('正在查')) break;
+    }
+    const impactBox = document.querySelector('[data-impact]');
+    const impact = {
+      present: !!impactBox,
+      text: impactBox?.innerText ?? '',
+      // 影响范围必须排在确认按钮之前 —— 摆在后面等于没摆。
+      beforeConfirm: impactBox
+        ? !!(document.querySelector('.modal-actions .primary-btn').compareDocumentPosition(impactBox)
+            & Node.DOCUMENT_POSITION_PRECEDING)
+        : false
+    };
+
     const field = document.querySelector('#credential-key');
     setter.call(field, ${JSON.stringify(ROTATED_UI_KEY)});
     field.dispatchEvent(new Event('input', { bubbles: true }));
@@ -663,8 +682,29 @@ async function runChecks() {
       await wait(150);
       if (!document.querySelector('.modal-layer')) break;
     }
-    return { closed: !document.querySelector('.modal-layer') };
+    return { closed: !document.querySelector('.modal-layer'), impact };
   })()`, true)
+
+  // --- 阶段 4 验收句的后半段：轮换前列出受影响的项目和环境 ------------------
+  check(
+    '🔴 轮换弹窗在确认之前就列出了受影响的项目和环境',
+    rotate.impact.present === true &&
+      rotate.impact.beforeConfirm === true &&
+      rotate.impact.text.includes('fixture'),
+    rotate.impact.text.split('\n').filter(Boolean).slice(0, 3).join(' | ') || '（没有影响范围）'
+  )
+  check(
+    '🔴 影响范围只说改哪儿，不显示 Key',
+    !rotate.impact.text.includes(CREDENTIAL_KEY) &&
+      !rotate.impact.text.includes(ROTATED_UI_KEY) &&
+      !rotate.impact.text.includes('sk-ant-'),
+    '和同步预览同一条规矩'
+  )
+  check(
+    '并且说明轮换本身不会自动改写这些文件',
+    rotate.impact.text.includes('不会自动改写'),
+    '写盘仍然是独立的一步'
+  )
 
   check('轮换弹窗保存后关闭', rotate.closed === true, `closed=${rotate.closed}`)
   check(
@@ -741,6 +781,80 @@ async function runChecks() {
       readFileSync(fixtureEnv, 'utf8').includes(line)
     ),
     '注释与其余变量都在'
+  )
+
+  // --- 复制与停用（阶段 4b）-------------------------------------------------
+  //
+  // 复制这条路现在整个在主进程里：渲染层只送一个 id 过去，
+  // 明文不为了复制而过桥。这里验的是界面这一端如实说明了会发生什么。
+  const copyAndRevoke = await evaluate(`(async () => {
+    const wait = (ms) => new Promise(r => setTimeout(r, ms));
+    const toastText = () => document.querySelector('.toast')?.textContent.trim() ?? '';
+
+    const beforeCopy = toastText();
+    document.querySelector('[data-action="copy-credential"]').click();
+    for (let i = 0; i < 40; i++) {
+      await wait(100);
+      if (toastText() !== beforeCopy) break;
+    }
+    const copyToast = toastText();
+
+    const beforeRevoke = toastText();
+    document.querySelector('[data-action="toggle-revoked"]').click();
+    for (let i = 0; i < 40; i++) {
+      await wait(100);
+      if (toastText() !== beforeRevoke) break;
+    }
+    await wait(200);
+
+    const row = document.querySelector('.credential-table tbody tr[data-credential]');
+    const btn = (action) => row?.querySelector('[data-action="' + action + '"]');
+    return {
+      copyToast,
+      revokeToast: toastText(),
+      status: row?.querySelector('.type-tag')?.textContent.trim() ?? '',
+      syncDisabled: btn('sync-credential')?.disabled ?? null,
+      syncTitle: btn('sync-credential')?.title ?? '',
+      validateDisabled: btn('validate-credential')?.disabled ?? null,
+      toggleLabel: btn('toggle-revoked')?.textContent.trim() ?? '',
+      bodyHasKey: document.body.innerText.includes(${JSON.stringify(ROTATED_UI_KEY)})
+    };
+  })()`, true)
+
+  check(
+    '🔴 复制的提示不再说"将在阶段 4 接入"，而是说明多久后清理',
+    copyAndRevoke.copyToast.includes('30 秒') && !copyAndRevoke.copyToast.includes('阶段 4'),
+    copyAndRevoke.copyToast || '（没有提示）'
+  )
+  check(
+    '并且说明期间复制了别的就不动它',
+    copyAndRevoke.copyToast.includes('复制了别的'),
+    '不会毁掉用户后来复制的内容'
+  )
+  check(
+    '🔴 复制之后页面上依然搜不到明文（它只进了系统剪贴板）',
+    copyAndRevoke.bodyHasKey === false,
+    `含明文=${copyAndRevoke.bodyHasKey}`
+  )
+  check(
+    '停用后状态显示为「已停用」',
+    copyAndRevoke.status === '已停用',
+    `状态=${copyAndRevoke.status}`
+  )
+  check(
+    '🔴 停用后同步与验证的入口都点不动',
+    copyAndRevoke.syncDisabled === true && copyAndRevoke.validateDisabled === true,
+    `同步=${copyAndRevoke.syncDisabled} 验证=${copyAndRevoke.validateDisabled}`
+  )
+  check(
+    '禁用时说明了为什么，而不是默默不响应',
+    copyAndRevoke.syncTitle.includes('已停用'),
+    copyAndRevoke.syncTitle || '（没有说明）'
+  )
+  check(
+    '按钮变成「启用」，这个决定是可逆的',
+    copyAndRevoke.toggleLabel === '启用',
+    `按钮=${copyAndRevoke.toggleLabel}`
   )
 
   // --- 编辑与删除单个变量（阶段 2 的最后两项）------------------------------

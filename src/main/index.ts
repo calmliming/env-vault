@@ -12,6 +12,8 @@
  */
 
 import { app, BrowserWindow, dialog, session } from 'electron'
+import { clearOnExit, hasPending } from './clipboard/index.ts'
+import { electronClipboard } from './clipboard/port'
 import { closeDatabase, initializeDatabase } from './db'
 import { registerIpcHandlers } from './ipc'
 import * as vault from './security/vault'
@@ -117,7 +119,34 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()
 })
 
-app.on('before-quit', () => {
+/**
+ * 🔴 退出前把剪贴板里的 Key 清掉。
+ *
+ * 定时器随进程一起死，而剪贴板里的 Key 不会 —— 用户复制完 5 秒就关掉应用的话，
+ * 那把 Key 会一直留在系统剪贴板里。
+ *
+ * ⚠️ 这里必须**拦一下退出**：Electron 44 的剪贴板 API 全是异步的，而
+ * `before-quit` 不会等 Promise —— 直接 fire-and-forget 的话进程先没了，
+ * 清理根本来不及跑，等于写了一个不生效的安全措施。
+ *
+ * 两道保险，避免"清不掉剪贴板"变成"应用退不出去"：
+ *   1. 只有真有待清理的东西时才拦（`hasPending()`）；
+ *   2. 最多等 300ms —— 清剪贴板重要，但没重要到值得让用户面对一个卡住的窗口。
+ * 标志位在发起异步之前就置上，所以第二次 `before-quit` 直接放行。
+ */
+let clipboardSettled = false
+
+app.on('before-quit', (event) => {
+  if (hasPending() && !clipboardSettled) {
+    clipboardSettled = true
+    event.preventDefault()
+    void Promise.race([
+      clearOnExit(electronClipboard),
+      new Promise((resolve) => setTimeout(resolve, 300))
+    ]).finally(() => app.quit())
+    return
+  }
+
   // 退出前停掉监听、清零内存里的主密钥，并让 WAL 正常检查点回主库文件。
   void stopWatching()
   vault.lock()

@@ -76,6 +76,11 @@ export const bridge = {
   adoptDiskFile: (fileId: number) => call(() => window.envvault.adoptDiskFile(fileId)),
   restoreFile: (fileId: number, keys: string[], expectedHash: string) =>
     call(() => window.envvault.restoreFile(fileId, keys, expectedHash)),
+  listCredentialVersions: (credentialId: number) =>
+    call(() => window.envvault.listCredentialVersions(credentialId)),
+  copyEntryValue: (entryId: number) => call(() => window.envvault.copyEntryValue(entryId)),
+  copyCredentialKey: (credentialId: number) =>
+    call(() => window.envvault.copyCredentialKey(credentialId)),
   scanSecurity: (projectId: number) => call(() => window.envvault.scanSecurity(projectId)),
   listActivity: (limit?: number) => call(() => window.envvault.listActivity(limit)),
 

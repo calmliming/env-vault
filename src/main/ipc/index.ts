@@ -25,6 +25,7 @@ import { getDatabaseInfo, initializeDatabase } from '../db'
 import * as repo from '../db/repositories'
 import * as credentials from '../db/credentials'
 import * as security from '../db/security'
+import { electronClipboard } from '../clipboard/port'
 import { RepositoryError } from '../db/repositories'
 import * as vault from '../security/vault'
 import { VaultError } from '../security/vault'
@@ -401,6 +402,39 @@ export function registerIpcHandlers(): void {
   handle(CHANNELS.credentialsUnbind, (request) => {
     const body = asRecord(request)
     return credentials.unbindCredential(asPositiveInt(body.bindingId, 'bindingId'))
+  })
+
+  handle(CHANNELS.credentialsVersions, (request) => {
+    const body = asRecord(request)
+    return credentials.listCredentialVersions(asPositiveInt(body.credentialId, 'credentialId'))
+  })
+
+  // --- 剪贴板（阶段 4b）------------------------------------------------------
+
+  /**
+   * 🔴 这两个通道**不返回明文**，只返回「多久之后会清」。
+   *
+   * 复制原本要先走 `entries:reveal` / `credentials:reveal` 把值取到渲染层，
+   * 再由渲染层写剪贴板。挪到主进程之后，复制这条路上明文完全不过桥。
+   */
+  handle(CHANNELS.clipboardCopyEntry, async (request) => {
+    const body = asRecord(request)
+    return {
+      clearAfterMs: await repo.copyEntryValue(
+        asPositiveInt(body.entryId, 'entryId'),
+        electronClipboard
+      )
+    }
+  })
+
+  handle(CHANNELS.clipboardCopyCredential, async (request) => {
+    const body = asRecord(request)
+    return {
+      clearAfterMs: await credentials.copyCredentialKey(
+        asPositiveInt(body.credentialId, 'credentialId'),
+        electronClipboard
+      )
+    }
   })
 
   // --- 安全检查（阶段 4a）----------------------------------------------------

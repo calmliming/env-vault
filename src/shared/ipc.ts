@@ -43,7 +43,10 @@ export const CHANNELS = {
   credentialsUnbind: 'credentials:unbind',
   credentialsSyncPreview: 'credentials:sync-preview',
   credentialsSync: 'credentials:sync',
+  credentialsVersions: 'credentials:versions',
   securityScan: 'security:scan',
+  clipboardCopyEntry: 'clipboard:copy-entry',
+  clipboardCopyCredential: 'clipboard:copy-credential',
   filesList: 'files:list',
   filesDiff: 'files:diff',
   filesAdopt: 'files:adopt',
@@ -533,6 +536,31 @@ export interface CredentialValidationResult {
 }
 
 /**
+ * 凭据换过的每一代 Key（阶段 4b）。
+ *
+ * 🔴 这里**没有 Key**，库里也没存过 —— `credential_versions` 表里
+ * 压根没有密文那一列。留着旧密钥是纯粹的负债：轮换的全部意义就是让旧的作废，
+ * 而一个能翻出所有历史 Key 的数据库，会让"越勤于轮换、泄漏后果越严重"。
+ *
+ * 指纹留着是有用的：它足以在别处（另一个项目、一份旧备份）**认出**
+ * 一把已经作废的 Key，而从指纹反推不回 Key 本身（HMAC，见 PHASE-3 §4）。
+ */
+export interface CredentialVersion {
+  /** 第几代，从 1 开始。 */
+  version: number
+  fingerprint: string
+  lastFour: string
+  createdAt: number
+  /** 被下一次轮换取代的时刻。当前这一代是 null。 */
+  revokedAt: number | null
+}
+
+/** 复制到剪贴板的结果。🔴 里面没有明文，只有"多久之后会清"。 */
+export interface ClipboardCopyResult {
+  clearAfterMs: number
+}
+
+/**
  * 安全检查里单个文件的结论（阶段 4）。
  *
  * 🔴 这个类型里**没有任何能放配置值的字段** —— 只有计数。
@@ -688,7 +716,25 @@ export interface IpcContract {
    * 和验证请求不同，这个是**只读、本地、无副作用**的，所以允许打开页面时
    * 自动跑 —— 一个需要先点一下才肯工作的安全检查，等于没有。
    */
+  [CHANNELS.credentialsVersions]: {
+    request: { credentialId: number }
+    response: CredentialVersion[]
+  }
   [CHANNELS.securityScan]: { request: { projectId: number }; response: SecurityReport }
+  /**
+   * 🔴 复制走主进程，所以**明文不为了复制而过桥**：
+   * 只有一个 id 进去、一个「多久之后清」出来。
+   * 这是它和 `entries:reveal` / `credentials:reveal` 的根本区别 ——
+   * 那两个必须过桥，因为值要显示在屏幕上。
+   */
+  [CHANNELS.clipboardCopyEntry]: {
+    request: { entryId: number }
+    response: ClipboardCopyResult
+  }
+  [CHANNELS.clipboardCopyCredential]: {
+    request: { credentialId: number }
+    response: ClipboardCopyResult
+  }
   [CHANNELS.filesList]: { request: { projectId: number }; response: EnvFileView[] }
   [CHANNELS.filesDiff]: { request: { fileId: number }; response: FileDiff }
   [CHANNELS.filesAdopt]: { request: { fileId: number }; response: AdoptResult }
@@ -786,8 +832,14 @@ export interface EnvVaultApi {
     targets: { bindingId: number; expectedHash: string }[]
   ): Promise<IpcResult<CredentialSyncResult>>
 
+  listCredentialVersions(credentialId: number): Promise<IpcResult<CredentialVersion[]>>
+
   /** 🔴 唯一会让应用执行外部程序的方法（起 git 子进程）。 */
   scanSecurity(projectId: number): Promise<IpcResult<SecurityReport>>
+
+  /** 🔴 复制不需要明文过桥：只给 id，拿回「多久之后清」。 */
+  copyEntryValue(entryId: number): Promise<IpcResult<ClipboardCopyResult>>
+  copyCredentialKey(credentialId: number): Promise<IpcResult<ClipboardCopyResult>>
 
   listFiles(projectId: number): Promise<IpcResult<EnvFileView[]>>
   diffFile(fileId: number): Promise<IpcResult<FileDiff>>

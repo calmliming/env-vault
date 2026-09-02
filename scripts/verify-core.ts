@@ -13,6 +13,7 @@
 
 import { app } from 'electron'
 import { execFileSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -227,12 +228,16 @@ async function run(): Promise<void> {
   check('数据库文件已创建', existsSync(info.filePath) && statSync(info.filePath).size > 0, info.filePath)
   check(
     '迁移已推进到最新版本',
-    info.schemaVersion === info.latestVersion && info.latestVersion >= 4,
+    info.schemaVersion === info.latestVersion && info.latestVersion >= 5,
     `user_version=${info.schemaVersion} / latest=${info.latestVersion}`
   )
   check(
-    '四条迁移都已执行',
-    info.appliedMigrations.length === 4,
+    '五条迁移都已执行，且版本号连续无缺口',
+    // 不写死条数：迁移是 append-only 的，每加一条就要来改一次数字，
+    // 而那种"顺手 +1"的改动本身就是在把这条断言变成橡皮图章。
+    // 连续性才是真正要守的不变量 —— 缺号意味着有人删了或重排了已发布的迁移。
+    info.appliedMigrations.length === info.latestVersion &&
+      info.appliedMigrations.every((m, i) => m.version === i + 1),
     info.appliedMigrations.map((m) => `${m.version}:${m.name}`).join(', ') || '（无）'
   )
 
@@ -1166,10 +1171,33 @@ async function run(): Promise<void> {
     twin.fingerprint === primary.fingerprint,
     `${primary.fingerprint} === ${twin.fingerprint}`
   )
+  /*
+    ⚠️ 这条原来写的是 `!fingerprint.includes('cdef')`（Key 的末四位），
+    结果它是一条会随机变红的断言：指纹本身就是 16 位十六进制，而 `cdef`
+    也是合法的十六进制串 —— 它偶然出现的概率大约 1/5000，而每次跑
+    沙箱的主密钥都不一样，指纹跟着变。实测撞上过一次（790e48a7cdef059c）。
+
+    更要紧的是**那样测没有意义**：十六进制串里出现四个十六进制字符，
+    说明不了任何事情。真正该守的性质有两条，都是确定性的：
+      1. Key 里那些**不是十六进制**的片段绝不该出现（真出现就是拼接了原值）；
+      2. 🔴 指纹不等于裸 SHA-256 —— 也就是派生子密钥确实参与了计算。
+         这才是 PHASE-3 §4 的全部理由所在：裸哈希会让拿到库文件的人
+         能拿候选 Key 字典逐个比对，而派生之后没有系统密钥库就什么都验证不了。
+  */
   check(
-    '🔴 指纹里搜不到 Key 的任何片段',
-    !primary.fingerprint.includes('original') && !primary.fingerprint.includes('cdef'),
+    '🔴 指纹里没有 Key 的可辨认片段',
+    !primary.fingerprint.includes('original') && !primary.fingerprint.includes('sk-ant'),
     primary.fingerprint
+  )
+  check(
+    '🔴 指纹不是裸哈希 —— 派生子密钥确实参与了计算',
+    /^[0-9a-f]{16}$/.test(primary.fingerprint) &&
+      primary.fingerprint !==
+        createHash('sha256')
+          .update('sk-ant-api03-original-0123456789abcdef', 'utf8')
+          .digest('hex')
+          .slice(0, 16),
+    `指纹=${primary.fingerprint} 裸哈希前 16 位=${createHash('sha256').update('sk-ant-api03-original-0123456789abcdef', 'utf8').digest('hex').slice(0, 16)}`
   )
   cred.deleteCredential(twin.id)
 
@@ -1580,6 +1608,177 @@ async function run(): Promise<void> {
     '🔴 ENVVAULT_BLOCK_NETWORK 下真传输直接拒发（忘了注入假传输会响亮地失败）',
     blocked.includes('ENVVAULT_BLOCK_NETWORK'),
     blocked || '（真传输没有拒绝，这个进程可能真的发过包）'
+  )
+
+  // 阶段 4b：版本历史、停用、剪贴板
+  // ---------------------------------------------------------------------------
+
+  // --- 版本历史：每换一次 Key 就是新的一代 ----------------------------------
+  const versions = cred.listCredentialVersions(primary.id)
+  check(
+    '每换一次 Key 就记一代，当前那代没有作废时间',
+    versions.length === 3 &&
+      versions[0]!.version === 3 &&
+      versions[0]!.revokedAt === null &&
+      versions.slice(1).every((v) => v.revokedAt !== null),
+    versions.map((v) => `v${v.version}${v.revokedAt ? '(已作废)' : '(当前)'}`).join(' ')
+  )
+  check(
+    '当前这一代的指纹和凭据本身对得上',
+    versions[0]!.fingerprint === cred.listCredentials().find((c) => c.id === primary.id)?.fingerprint,
+    `v${versions[0]!.version} 指纹=${versions[0]!.fingerprint.slice(0, 8)}`
+  )
+  check(
+    '历代指纹互不相同（换的确实是不同的 Key）',
+    new Set(versions.map((v) => v.fingerprint)).size === versions.length,
+    versions.map((v) => v.fingerprint.slice(0, 8)).join(' / ')
+  )
+  check(
+    '每条凭据都至少有一代记录（迁移 005 的存量补齐要维持这个不变量）',
+    db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM model_credentials c
+         WHERE NOT EXISTS (SELECT 1 FROM credential_versions v WHERE v.credential_id = c.id)`
+      )
+      .get<{ n: number }>()?.n === 0,
+    '没有孤立的凭据'
+  )
+
+  // --- 🔴 版本表里没有任何一代的 Key ----------------------------------------
+  // 留着旧密钥是纯粹的负债：轮换的全部意义就是让旧的那把作废，
+  // 而一个能翻出所有历史 Key 的库，会让「越勤于轮换、泄漏后果越严重」。
+  const versionRows = db
+    .prepare('SELECT * FROM credential_versions')
+    .all<Record<string, unknown>>()
+  const versionNeedles = ['sk-ant-api03-original', ROTATED_KEY, REVALIDATE_KEY, ...NEEDLES]
+  const leakedInVersions = versionRows.flatMap((row) =>
+    Object.entries(row)
+      .filter(
+        ([, value]) => typeof value === 'string' && versionNeedles.some((n) => value.includes(n))
+      )
+      .map(([column]) => column)
+  )
+  check(
+    '🔴 版本表逐列扫描，没有任何一代的 Key 明文',
+    leakedInVersions.length === 0,
+    leakedInVersions.length === 0
+      ? `${versionRows.length} 行 × ${Object.keys(versionRows[0] ?? {}).length} 列`
+      : `泄漏的列: ${[...new Set(leakedInVersions)].join(', ')}`
+  )
+  check(
+    '🔴 版本表里压根没有存密文的列',
+    !Object.keys(versionRows[0] ?? {}).some((column) => column.includes('encrypted')),
+    Object.keys(versionRows[0] ?? {}).join(', ')
+  )
+
+  // --- 轮换前的影响范围就是同步预览那一份 -----------------------------------
+  // 🔴 界面上「轮换会波及哪儿」直接调 previewCredentialSync。
+  // 另写一份计算必然分叉，而分叉之后「到底会改哪几个文件」没有办法回答。
+  const impact = cred.previewCredentialSync(primary.id)
+  check(
+    '轮换前能列出受影响的项目和环境（阶段 4 验收句的后半段）',
+    impact.targets.length > 0 &&
+      impact.targets.every((t) => t.projectName !== '' && t.environment !== ''),
+    impact.targets.map((t) => `${t.projectName}/${t.environment}:${t.keyVariable}`).join(' / ')
+  )
+  check(
+    '🔴 影响范围里不含 Key（和同步预览同一条规矩）',
+    !JSON.stringify(impact).includes('sk-ant-') && !JSON.stringify(impact).includes(REVALIDATE_KEY),
+    '只说改哪儿，不说改成什么'
+  )
+
+  // --- 停用：主进程独立拦一道 -----------------------------------------------
+  cred.updateCredential({ credentialId: primary.id, status: 'revoked' })
+
+  let syncBlocked = ''
+  try {
+    cred.syncCredential(primary.id, [
+      { bindingId: impact.targets[0]!.bindingId, expectedHash: impact.targets[0]!.expectedHash! }
+    ])
+  } catch (error) {
+    syncBlocked = error instanceof repo.RepositoryError ? error.code : String(error)
+  }
+  check(
+    '🔴 停用之后拒绝把这把 Key 写进项目文件',
+    syncBlocked === 'PATH_REJECTED',
+    `code=${syncBlocked}`
+  )
+
+  let validateBlocked = ''
+  try {
+    await cred.validateCredential(primary.id, fakeTransport(200))
+  } catch (error) {
+    validateBlocked = error instanceof repo.RepositoryError ? error.code : String(error)
+  }
+  check(
+    '🔴 停用之后也不再向厂商发验证请求',
+    validateBlocked === 'PATH_REJECTED',
+    `code=${validateBlocked}`
+  )
+  check(
+    '停用不动版本行 —— 那把 Key 还是那把，只是这条凭据被搁置了',
+    cred.listCredentialVersions(primary.id)[0]!.revokedAt === null,
+    '当前代仍然是当前代'
+  )
+
+  // 启用回来，后面的段落还要用它。
+  cred.updateCredential({ credentialId: primary.id, status: 'unverified' })
+  check(
+    '启用之后同步预览又能算出来了',
+    cred.previewCredentialSync(primary.id).targets.length === impact.targets.length,
+    '恢复正常'
+  )
+
+  // --- 剪贴板：复制不经过返回值 ---------------------------------------------
+  const clipboardLog: string[] = []
+  const fakeClipboard = {
+    content: '',
+    async writeText(text: string) {
+      this.content = text
+      clipboardLog.push('write')
+    },
+    async readText() {
+      return this.content
+    },
+    async clear() {
+      this.content = ''
+      clipboardLog.push('clear')
+    }
+  }
+
+  const copyDelay = await cred.copyCredentialKey(primary.id, fakeClipboard)
+  check(
+    '复制把 Key 写进了剪贴板，并给出清理倒计时',
+    fakeClipboard.content === REVALIDATE_KEY && copyDelay === 30_000,
+    `${copyDelay / 1000} 秒后清理`
+  )
+  check(
+    '🔴 复制的返回值只有倒计时，没有值',
+    typeof copyDelay === 'number',
+    '主进程直接写剪贴板，明文不为了复制而过桥'
+  )
+
+  const copyLog = repo.listActivity(300).filter((r) => r.action === 'credential.copy')
+  check(
+    '🔴 复制留了独立的记录（和「显示」分开），且不含 Key',
+    copyLog.length === 1 && !JSON.stringify(copyLog).includes('sk-ant-'),
+    copyLog[0]?.detail ?? '（没有记录）'
+  )
+
+  // 配置项那一侧同一条路
+  await repo.copyEntryValue(entryOf('DB_PASSWORD').id, fakeClipboard)
+  check(
+    '配置项的复制走同一条路，记 entry.copy',
+    fakeClipboard.content === 'pa#ss word' &&
+      repo.listActivity(300).some((r) => r.action === 'entry.copy'),
+    '两侧同一个模块'
+  )
+  check(
+    '🔴 复制的操作记录里没有值',
+    !JSON.stringify(repo.listActivity(300).filter((r) => r.action.endsWith('.copy'))).includes(
+      'pa#ss'
+    ),
+    '只记 key 名与倒计时'
   )
 
   // --- 删除变量时绑定要跟着走 -----------------------------------------------
