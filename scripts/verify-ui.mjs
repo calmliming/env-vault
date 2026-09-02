@@ -19,7 +19,16 @@
  */
 
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -856,6 +865,137 @@ async function runChecks() {
     copyAndRevoke.toggleLabel === '启用',
     `按钮=${copyAndRevoke.toggleLabel}`
   )
+
+  // 🔴 停用是这一段制造的临时状态，段落末尾必须还原 ——
+  // 否则后面的 CLI 注入会（正确地）跳过这条凭据，而那条断言看起来
+  // 像是注入坏了。样例数据是共享的（HANDOFF §8）。
+  // 顺带这也把「可逆」真验了一次，而不是只看按钮文案。
+  const reEnabled = await evaluate(`(async () => {
+    const wait = (ms) => new Promise(r => setTimeout(r, ms));
+    document.querySelector('[data-action="toggle-revoked"]').click();
+    for (let i = 0; i < 40; i++) {
+      await wait(100);
+      const row = document.querySelector('.credential-table tbody tr[data-credential]');
+      if (row?.querySelector('.type-tag')?.textContent.trim() !== '已停用') break;
+    }
+    const row = document.querySelector('.credential-table tbody tr[data-credential]');
+    return {
+      status: row?.querySelector('.type-tag')?.textContent.trim() ?? '',
+      syncDisabled: row?.querySelector('[data-action="sync-credential"]')?.disabled ?? null
+    };
+  })()`, true)
+
+  check(
+    '重新启用后状态回到「未验证」，同步入口也解禁',
+    reEnabled.status === '未验证' && reEnabled.syncDisabled === false,
+    `状态=${reEnabled.status} 同步禁用=${reEnabled.syncDisabled}`
+  )
+
+  // --- CLI 注入（阶段 5a）---------------------------------------------------
+  //
+  // 端到端放在这里而不是 verify-core，是因为 safeStorage 的那个坑：
+  // 两个进程必须带**同一个** `--user-data-dir`，才解得开对方写的 vault.key。
+  // verify-core 独立跑时走的是 app.setPath，凑不齐这个条件（见那边的注释）。
+  //
+  // 走的是 `electron . run …` 那条真实路径（package.json 的 main），
+  // 所以它同时验到了：CLI 分支没被单实例锁挡住（界面此刻正开着！）、
+  // 无窗口能解锁 Vault、环境变量真的到了子进程里。
+  // 界面这一路里被凭据绑定的是 `.env`（default 环境）里的 BRAND_NEW ——
+  // 「从变量提取凭据」那一步绑的就是它，同步也是写的它。
+  const CLI_ARGS = ['.', `--user-data-dir=${sandbox}`, 'run', '-p', 'fixture', '-e', 'default']
+
+  /*
+    🔴 「不落盘」这条用**前后快照**验，不用白名单排除。
+
+    第一版是「扫出所有含这把 Key 的文件，再排掉 fixture 目录」——
+    错的：备份目录（写盘时自动建的）里本来也有这把 Key，于是断言误报。
+    而更糟的是，白名单这个思路本身会越加越长，最后把真正的泄漏也一起放过。
+
+    快照直接回答要问的那个问题：**这次 CLI 运行有没有让磁盘上多出一份**。
+  */
+  const scanForKey = (dir, needle, depth = 0) => {
+    if (depth > 3) return []
+    let entries
+    try {
+      entries = readdirSync(dir, { withFileTypes: true })
+    } catch {
+      return []
+    }
+    const hits = []
+    for (const entry of entries) {
+      const full = join(dir, entry.name)
+      if (entry.isDirectory()) {
+        if (entry.name === 'node_modules' || entry.name === '.git') continue
+        hits.push(...scanForKey(full, needle, depth + 1))
+        continue
+      }
+      try {
+        if (statSync(full).size > 8 * 1024 * 1024) continue
+        if (readFileSync(full).toString('latin1').includes(needle)) hits.push(full)
+      } catch {
+        /* 读不到的跳过 */
+      }
+    }
+    return hits
+  }
+
+  const filesWithKey = () =>
+    new Set([...scanForKey(sandbox, ROTATED_UI_KEY), ...scanForKey(tmpdir(), ROTATED_UI_KEY)])
+  const beforeCli = filesWithKey()
+
+  // ⚠️ 让子命令打印注入值的 sha256 而不是值本身 ——
+  // 验收的输出是要打到终端上的，把 Key 打出来就等于自己破了自己的规矩。
+  const childScript =
+    "const c=require('node:crypto');" +
+    "process.stdout.write(c.createHash('sha256').update(process.env.BRAND_NEW??'','utf8').digest('hex'))"
+
+  const injected = spawnSync(ELECTRON, [...CLI_ARGS, '--', 'node', '-e', childScript], {
+    cwd: process.cwd(),
+    encoding: 'utf8'
+  })
+  const expectedDigest = createHash('sha256').update(ROTATED_UI_KEY, 'utf8').digest('hex')
+
+  check(
+    '🔴 CLI 端到端：子进程真的拿到了注入的 Key（比对哈希，不打印值）',
+    (injected.stdout ?? '').trim() === expectedDigest,
+    (injected.stdout ?? '').trim() === expectedDigest
+      ? '哈希一致'
+      : `退出码=${injected.status} stderr=${(injected.stderr ?? '').trim().slice(0, 200)}`
+  )
+  check(
+    '🔴 界面开着时 CLI 照样能跑（没被单实例锁挡下）',
+    injected.status === 0,
+    `退出码=${injected.status}`
+  )
+  check(
+    '启动时说明了哪些变量来自凭据，且只说变量名',
+    (injected.stderr ?? '').includes('来自模型凭据') &&
+      !(injected.stderr ?? '').includes(ROTATED_UI_KEY),
+    (injected.stderr ?? '').split('\n').find((l) => l.includes('来自模型凭据'))?.trim() ?? '（没有说明）'
+  )
+
+  // --- 🔴 验收句本身：不落盘明文 --------------------------------------------
+  //
+  // ⚠️ 这条**必须跑在一次成功的注入之后**，否则它是空过的：
+  // CLI 没起来时磁盘上当然不会多出东西，而那说明不了任何事。
+  // （第一版就是这样：CLI 因为别的原因失败了，这条却 PASS。）
+  const newFilesWithKey = [...filesWithKey()].filter((path) => !beforeCli.has(path))
+  check(
+    '🔴 CLI 跑完后磁盘上没有多出这把 Key —— 不落盘明文（阶段 5 验收句）',
+    newFilesWithKey.length === 0,
+    newFilesWithKey.length === 0
+      ? `运行前后含该 Key 的文件都是同样 ${beforeCli.size} 个（都是项目文件与备份）`
+      : `新落盘于: ${newFilesWithKey.join(', ')}`
+  )
+
+  // --- 退出码原样传出去 -----------------------------------------------------
+  // 吞掉退出码的包装器在脚本和 CI 里没法用：那时候「命令失败了」
+  // 和「命令成功了」在调用方眼里长得一模一样。
+  const failing = spawnSync(ELECTRON, [...CLI_ARGS, '--', 'node', '-e', 'process.exit(42)'], {
+    cwd: process.cwd(),
+    encoding: 'utf8'
+  })
+  check('🔴 子进程的退出码原样传出来', failing.status === 42, `退出码=${failing.status}`)
 
   // --- 编辑与删除单个变量（阶段 2 的最后两项）------------------------------
   // 上面那段把视图切到了「模型凭据」，下面的断言都在配置表上，先切回去。

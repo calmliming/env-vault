@@ -25,7 +25,8 @@ Electron + React + TypeScript，数据全部留在本机，敏感值加密存储
 | 3 模型凭据库 | ✅ | [PHASE-3.md](PHASE-3.md) |
 | 4a Git 风险检查 | ✅ | [PHASE-4A.md](PHASE-4A.md) |
 | 4b 凭据版本与剪贴板 | ✅ | [PHASE-4B.md](PHASE-4B.md) |
-| 5 CLI 与高级集成 | ⬜ 未开始 | — |
+| 5a CLI 注入 | ✅ | [PHASE-5A.md](PHASE-5A.md) |
+| 5b 模板生成与加密导出 | ⬜ 未开始 | — |
 
 阶段 4 的验收句本来就是两半，所以拆成了两刀：
 「被 Git 跟踪的敏感文件必须显示风险」（4a）+
@@ -41,7 +42,8 @@ Electron + React + TypeScript，数据全部留在本机，敏感值加密存储
 向厂商验证一把 Key 现在还能不能用 →
 查每个 `.env*` 有没有被 Git 跟踪 / 被 .gitignore 覆盖，并给出风险等级和处置办法 →
 看一条凭据换过几代 Key、停用它、轮换前先看清会波及哪些项目 →
-复制到剪贴板并在 30 秒后自动清理。
+复制到剪贴板并在 30 秒后自动清理 →
+用 `envvault run -- <命令>` 把一个环境注入子进程，不落盘明文。
 
 **界面上没有任何"尚未接入"的占位了** —— MVP 清单的每一条都真的能用。
 **没有任何地方假装完成了实际没做的事**，请保持这条。
@@ -50,12 +52,21 @@ Electron + React + TypeScript，数据全部留在本机，敏感值加密存储
 
 ```powershell
 pnpm dev       # 开发模式，Vite HMR + Electron
-pnpm verify    # 全套：161 单元测试 + 181 核心断言 + 107 界面断言，约 1 分钟
+pnpm verify    # 全套：180 单元测试 + 187 核心断言 + 113 界面断言，约 2 分钟
+
+# CLI（阶段 5a）。打包后是 EnvVault.exe run --…
+electron . run --project fixture --env local -- node -v
+electron . run --help
 ```
 
 > ⚠️ `verify:core` 会在沙箱里 `git init` 一个真仓库（安全检查那一层只有对着
 > 真 git 才验得出东西）。**这台机器上必须有 git**，否则那一组会响亮地失败 ——
 > 这是故意的，静默跳过的断言和通过的断言在报告上长得一模一样。
+
+> ⚠️ **单独跑 `verify:core` 或 `verify:ui` 之前先 `pnpm build`。**
+> CLI 的端到端走的是 `electron .` → package.json 的 main → `out/main/index.js`，
+> 那是 build 的产物；产物旧了就是在验上一版的代码。
+> 这和上面那条 `verify:ui` 用 `verify:core` 生成的包，是同一类坑。
 
 `pnpm verify` 全绿是当前基线。**动任何代码前先跑一次**，确认起点是干净的。
 
@@ -114,6 +125,11 @@ src/main/
     credentials.ts   模型凭据与绑定；写盘复用 repositories 的 writeGuarded
     security.ts      安全检查：磁盘扫描 + 库里的敏感度计数 + git 状态 → 风险报告
                      🔴 全程不解密，所以 Vault 锁着也能用
+    inject.ts        把一个环境解析成可注入的环境变量。
+                     🔴 一次返回整个环境的明文 —— **绝不能上 IPC**，见 §5
+  cli/               ⚠️ args.ts 要能被 node --test 跑，约定见 §5
+    args.ts          参数解析。🔴 `--` 之后原样交给子命令，不解析
+    index.ts         注入并起子进程。🔴 值只经 env 传，不落盘
   clipboard/         ⚠️ index.ts 要能被 node --test 跑，约定见 §5
     index.ts         定时清理的判定。🔴 只清我们写进去的那一份，见 §5
     port.ts          🔴 全应用唯一 import Electron clipboard 的文件
@@ -154,8 +170,8 @@ index.html           阶段 0 之前的 HTML 原型，留作视觉对照，不�
 
 ## 5. 不明显的约定（改代码前必读）
 
-**`src/main/env/`、`providers/`、`git/` 和 `clipboard/index.ts` 里的 import
-必须带 `.ts` 后缀，且不能用 `@shared/*` 别名。** 这些模块要能被 `node --test`
+**`src/main/env/`、`providers/`、`git/`、`clipboard/index.ts` 和 `cli/args.ts`
+里的 import 必须带 `.ts` 后缀，且不能用 `@shared/*` 别名。** 这些模块要能被 `node --test`
 直接跑，而 Node 的 ESM 解析不会替你补扩展名。
 其它目录保持无后缀。`tsconfig.node.json` 里为此开了 `allowImportingTsExtensions`。
 
@@ -205,6 +221,22 @@ Node 的类型剥离是 strip-only 的，会报 `ERR_UNSUPPORTED_TYPESCRIPT_SYNT
 「你问的这些一个都没被忽略」，当成失败的话，没有 .gitignore 的项目
 （最该报警的那种）会整页显示「查不了」。两条都有断言守着，见 PHASE-4A §3、§5。
 
+**🔴 `db/inject.ts` 的 `resolveEnvironment` 绝不能暴露成 IPC 通道。**
+它一次返回一个环境里**所有**变量的明文。逐变量 reveal 的审计存在的全部意义，
+就是不让这种批量读取悄悄发生。它对 CLI 进程是必要的（子进程要的就是这些值），
+但一旦上了 IPC，渲染层就能一次性拿走整个环境，前面几刀在明文边界上的功夫全废。
+它的调用方只有一个：`cli/index.ts`，跑在没有窗口也没注册任何 IPC 的进程里。
+
+**CLI 分支必须走在 `requestSingleInstanceLock()` 之前。**
+用户开着界面再跑 `envvault run` 是最正常的用法，被锁挡下来的表现是
+「命令什么也没做就退出了，而且退出码是 0」—— 脚本里根本看不出出过事。
+不取锁是安全的：CLI 只读库，WAL + `busy_timeout` 已经处理了并发。
+
+**起子进程时不许开 shell。** 开了的话 cmd.exe 会重新解析参数，
+`node -e "if (a) …"` 里的引号和括号会被静默搅乱。Windows 上的 `.cmd`
+（npm / pnpm）由 `resolveExecutable` 换成显式的 `cmd.exe /d /s /c`，
+参数仍逐个传给 spawn。详见 PHASE-5A §6。
+
 **剪贴板清理必须先比对哈希，不许无条件 `clear()`。**
 用户很可能在这 30 秒里复制了别的东西，无条件清会**毁掉他的剪贴板** ——
 一个安全功能顺手破坏用户数据，比不做这个功能更糟。读不到剪贴板时同样不清。
@@ -242,6 +274,11 @@ Node 的类型剥离是 strip-only 的，会报 `ERR_UNSUPPORTED_TYPESCRIPT_SYNT
 版本历史：
 credential_versions 只有 fingerprint + last_four + 时间  ← 从来没有过明文
         （连密文列都没有：留着旧密钥是纯粹的负债，见 PHASE-4B §2）
+
+CLI 注入：
+resolveEnvironment 在 CLI 进程内存里解密整个环境
+        → 直接交给 spawn 的 env，**不落盘、不打印、不过 IPC**
+        ⚠️ 但环境变量对同用户的其它进程可见 ——「不落盘」≠「隔离」
 ```
 
 明文过桥**只发生在 `entries:reveal` 和 `credentials:reveal` 两个通道**，
@@ -277,26 +314,25 @@ credential_versions 只有 fingerprint + last_four + 时间  ← 从来没有过
 同理，`credential.validate` 的操作记录只记厂商名、凭据名、结论和状态码，
 **连调用地址都不记** —— 自定义厂商的地址是用户填的，谁也不敢保证里面没有秘密。
 
-## 7. 下一步：阶段 5，CLI 与高级集成
+## 7. 下一步：阶段 5b，模板生成与加密导出
 
-MVP 清单（计划 §11）到 4b 为止**每一条都成立了**。剩下的是计划 §9 阶段 5：
+MVP 清单（计划 §11）到 4b 就全成立了，5a 又补上了 CLI 注入。剩下的：
 
-- `envvault run -- <command>` 进程注入。验收句是
-  「CLI 注入模式可以在不落盘明文 Key 的情况下启动本地开发命令」——
-  也就是 Key 只经环境变量进子进程，不写任何临时文件。
-  ⚠️ 环境变量在多数系统上对同用户的其它进程可见，这个边界要在文档里说清楚，
-  别声称成"完全隔离"。
-- 从模板生成 `.env.example`（`document.formatSkeleton` 已经能产出不含值的骨架，
-  那正是这件事要的东西，别重写）。
-- 批量导入与**加密导出**（计划 §7：导出要二次确认，优先导出加密包）。
-- 1Password / Bitwarden / Doppler 适配。
+- **从模板生成 `.env.example`。** `document.formatSkeleton` 已经能产出不含值的
+  骨架（阶段 2 为了修 `original_format` 的明文泄漏写的），**那正是这件事要的
+  东西，别重写**。要决定的是「哪些变量进模板」和「要不要保留注释」。
+- **批量导入与加密导出。** 计划 §7：导出要二次确认、优先导出加密包。
+  导出是又一条明文出口，按前几刀的规矩单独想清楚边界再动手。
+- **1Password / Bitwarden / Doppler 适配。** 它们需要机器上装有各自的 CLI，
+  验收里只能全程用假的 —— 而一个只验过假实现的集成等于没验。
+  真要做的话，先想清楚怎么验，再想怎么写。
 
-**CLI 是一个新的进程边界**，而且是这个应用第一次把 Key 交给别的程序。
-按前三刀的节奏，它值得单独一刀。现有的三条边界（出站流量、执行外部程序、
-系统剪贴板）各自只覆盖一条路，不要默认沿用它们的结论。
+四条外部边界都已经开了（出站流量、执行外部程序、系统剪贴板、把 Key 交给
+子进程），但它们各自只覆盖一条路。5b 的导出是第五条，
+**不要默认沿用前面的结论**。
 
-做之前先读 §5 和 §6：CLI 需要在**没有窗口**的情况下解锁 Vault，
-而现在的解锁流程假定有一个渲染层在。那是这一刀真正的难点，不是参数解析。
+顺带：`envvault` 装进 PATH 是发布时的事（electron-builder 的安装器），
+5a 没做。现在打包后是 `EnvVault.exe run -- <命令>`。
 
 ## 8. 四条来自踩坑的经验
 
@@ -323,6 +359,15 @@ MVP 清单（计划 §11）到 4b 为止**每一条都成立了**。剩下的是
 - 「操作记录里的动作都是中文」—— 加了新的 action 忘配标签就红（4a、4b 各拦一次）；
 - `risk.test.ts` 的「判定入参里没有放值的字段」—— 加字段就红，
   强制有人确认新字段不是一个能装下配置值的口子。
+
+**🔴 把 bug 放回去之后，先确认它真的进了被测的产物。**
+阶段 5a 的三条实验里，第三条（吞掉子进程退出码）**是绿的** ——
+差一点就当成"这条断言没用"记下来了。真正的原因是改动留下一个未使用的变量、
+`pnpm build` 因此失败，而我把构建输出重定向掉了没看见 ——
+被测的根本还是旧产物。换个改法并**确认构建成功**之后，那条断言立刻红了。
+
+构建失败 + 旧产物 = 一次什么都没验到的实验，而它和「断言无效」在结果上
+长得一模一样。**别把构建输出重定向到 `/dev/null`。**
 
 **一条会随机变红的断言比没有断言更糟。** 阶段 3 留下的
 `!fingerprint.includes('cdef')` 就是：指纹是 16 位十六进制，而 `cdef`

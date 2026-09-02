@@ -12,6 +12,8 @@
  */
 
 import { app, BrowserWindow, dialog, session } from 'electron'
+import { looksLikeCli } from './cli/args.ts'
+import { runCliAndExit } from './cli/index'
 import { clearOnExit, hasPending } from './clipboard/index.ts'
 import { electronClipboard } from './clipboard/port'
 import { closeDatabase, initializeDatabase } from './db'
@@ -22,8 +24,24 @@ import { createMainWindow } from './window'
 
 const isDev = !app.isPackaged
 
-// 单实例：多开会有两个主进程同时写同一个 SQLite 文件和同一个 vault.key。
-if (!app.requestSingleInstanceLock()) {
+/**
+ * 🔴 CLI 分支必须走在单实例锁**之前**（阶段 5a）。
+ *
+ * 用户开着图形界面、再在终端里跑 `envvault run` 是最正常的用法。
+ * 如果先取锁，这个进程会因为界面已经占着锁而直接 `app.quit()` ——
+ * 表现是「命令莫名其妙什么也没做就退出了」，而且退出码是 0，
+ * 脚本里根本看不出出过事。
+ *
+ * 让 CLI 不取锁是安全的：它只读数据库（外加一条注入记录），
+ * WAL + `busy_timeout` 已经处理了并发。真正需要独占的是「两个主进程
+ * 同时写同一个 vault.key」，而 CLI 不写它。
+ *
+ * CLI 模式下不开窗、不注册 IPC、不启动文件监听 —— 它跑完一条命令就退出。
+ */
+if (looksLikeCli(process.argv)) {
+  void app.whenReady().then(() => runCliAndExit(process.argv))
+} else if (!app.requestSingleInstanceLock()) {
+  // 单实例：多开会有两个主进程同时写同一个 SQLite 文件和同一个 vault.key。
   app.quit()
 } else {
   app.on('second-instance', () => {

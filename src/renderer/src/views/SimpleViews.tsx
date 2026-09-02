@@ -317,7 +317,8 @@ const ACTION_LABELS: Record<string, string> = {
   'credential.bind': '绑定凭据',
   'credential.unbind': '解除绑定',
   'credential.sync': '同步到绑定文件',
-  'credential.delete': '删除凭据'
+  'credential.delete': '删除凭据',
+  'cli.inject': 'CLI 注入到子进程'
 }
 
 function actionLabel(action: string): string {
@@ -339,6 +340,8 @@ const ORANGE_ACTIONS = new Set([
   // 而查看只是在屏幕上停留了一会儿。
   'entry.copy',
   'credential.copy',
+  // 🔴 注入把一整个环境的明文交给了另一个程序 —— 比复制走得更远。
+  'cli.inject',
   // 改过用户的磁盘文件
   'entry.delete',
   'file.restore',

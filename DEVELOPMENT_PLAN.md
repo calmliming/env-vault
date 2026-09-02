@@ -437,9 +437,10 @@ redact(value)
 
 ## 12. 当前进度与下一步
 
-阶段 0~4 已完成。落地记录分别见 `docs/PHASE-0.md`
-（含与本计划的两处偏差及其理由）、`docs/PHASE-1.md`、`docs/PHASE-2.md`、
-`docs/PHASE-3.md`、`docs/PHASE-4A.md`、`docs/PHASE-4B.md`。
+阶段 0~4 已完成，阶段 5 的 CLI 注入（5a）也已完成。落地记录分别见
+`docs/PHASE-0.md`（含与本计划的两处偏差及其理由）、`docs/PHASE-1.md`、
+`docs/PHASE-2.md`、`docs/PHASE-3.md`、`docs/PHASE-4A.md`、
+`docs/PHASE-4B.md`、`docs/PHASE-5A.md`。
 新会话请先读 `docs/HANDOFF.md`：那里写着「现在到哪了、有哪些坑、下一步做什么」。
 
 阶段 4 拆成了两刀，因为它的验收句本来就是两半：
@@ -459,4 +460,7 @@ redact(value)
 5. ~~接入模型凭据实体、项目绑定与厂商验证请求。~~（阶段 3 已完成）
 6. ~~阶段 4a：Git 跟踪与 `.gitignore` 检查、风险分级、安全检查页。~~（已完成）
 7. ~~阶段 4b：凭据版本与停用、轮换前的影响范围预览、剪贴板定时清理。~~（已完成）
-8. 阶段 5：CLI 注入、`.env.example` 生成、加密导出与外部 Secret Manager 适配。
+8. ~~阶段 5a：`envvault run` 进程注入。~~（已完成）
+9. 阶段 5b：`.env.example` 生成、批量导入与加密导出。
+10. 外部 Secret Manager 适配（1Password / Bitwarden / Doppler）——
+    需要机器上装有各自的 CLI，动手前先想清楚怎么验收。

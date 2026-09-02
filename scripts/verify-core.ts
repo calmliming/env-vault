@@ -14,7 +14,7 @@
 import { app } from 'electron'
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync, statSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { closeDatabase, getDatabaseInfo, initializeDatabase } from '../src/main/db'
@@ -22,6 +22,7 @@ import { getSchemaVersion, migrate } from '../src/main/db/migrator'
 import * as repo from '../src/main/db/repositories'
 import * as cred from '../src/main/db/credentials'
 import * as security from '../src/main/db/security'
+import * as inject from '../src/main/db/inject'
 import * as vault from '../src/main/security/vault'
 import { VaultError } from '../src/main/security/vault'
 import { applyEdits, entriesOf, parseEnv, serializeEnv } from '../src/main/env/document.ts'
@@ -1780,6 +1781,86 @@ async function run(): Promise<void> {
     ),
     '只记 key 名与倒计时'
   )
+
+  // 阶段 5a：CLI 注入
+  // ---------------------------------------------------------------------------
+  //
+  // 验收句：「CLI 注入模式可以在不落盘明文 Key 的情况下启动本地开发命令」。
+
+  // --- 🔴 绑定变量注入的是凭据的当前值，不是文件里的旧值 --------------------
+  //
+  // 此刻 primary 的 Key 是 REVALIDATE_KEY（上一段轮换过），
+  // 而磁盘文件和 config_entries 里还停在 ROTATED_KEY —— 没同步过。
+  // 这正是要守的场景：界面上明明换过了，用命令跑起来却还在用旧的。
+  const fileValue = repo.revealEntry(entryOf('ANTHROPIC_API_KEY').id).value
+  const resolved = inject.resolveEnvironment(project.id, 'local')
+
+  check(
+    '（前置）文件里的值和凭据当前值确实不同，下面那条才有意义',
+    fileValue === ROTATED_KEY && fileValue !== REVALIDATE_KEY,
+    `文件=${fileValue.slice(0, 24)}… 凭据=${REVALIDATE_KEY.slice(0, 24)}…`
+  )
+  check(
+    '🔴 绑定到凭据的变量注入凭据的当前值（真源只有一个）',
+    resolved.values.get('ANTHROPIC_API_KEY') === REVALIDATE_KEY,
+    resolved.values.get('ANTHROPIC_API_KEY') === REVALIDATE_KEY
+      ? '注入的是凭据的新 Key'
+      : '注入的是文件里的旧值'
+  )
+  check(
+    '并如实标出「这个变量来自凭据，且和文件不一致」',
+    resolved.variables.find((v) => v.key === 'ANTHROPIC_API_KEY')?.fromCredential === true &&
+      resolved.variables.find((v) => v.key === 'ANTHROPIC_API_KEY')?.differsFromFile === true,
+    '用户不会对"注入值和文件不一样"感到意外'
+  )
+  check(
+    '没绑定的普通变量照旧取文件里的值',
+    resolved.values.get('DB_PASSWORD') === 'pa#ss word' &&
+      resolved.variables.find((v) => v.key === 'DB_PASSWORD')?.fromCredential === false,
+    `DB_PASSWORD 来自文件`
+  )
+
+  // --- 🔴 一次注入只记一条，且只有变量名 ------------------------------------
+  const injectLog = repo.listActivity(300).filter((r) => r.action === 'cli.inject')
+  check(
+    '🔴 一次注入记一条操作记录，detail 里只有变量名',
+    injectLog.length === 1 &&
+      injectLog[0]!.detail?.includes('ANTHROPIC_API_KEY') === true &&
+      !JSON.stringify(injectLog).includes('sk-ant-') &&
+      !NEEDLES.some((needle) => JSON.stringify(injectLog).includes(needle)),
+    injectLog[0]?.detail?.slice(0, 60) ?? '（没有记录）'
+  )
+
+  // --- 停用的凭据不注入 -----------------------------------------------------
+  cred.updateCredential({ credentialId: primary.id, status: 'revoked' })
+  const whileRevoked = inject.resolveEnvironment(project.id, 'local')
+  check(
+    '🔴 已停用的凭据不会被塞进正在跑的进程',
+    !whileRevoked.values.has('ANTHROPIC_API_KEY') &&
+      whileRevoked.variables
+        .find((v) => v.key === 'ANTHROPIC_API_KEY')
+        ?.credentialName?.includes('已停用') === true,
+    '和「停用后拒绝同步」同一条规矩'
+  )
+  cred.updateCredential({ credentialId: primary.id, status: 'unverified' })
+
+  /*
+    ⚠️ 端到端那几条（起真的 `electron . run …` 子进程）**不在这里**，在 verify-ui.mjs。
+
+    原因是脚本开头那条 safeStorage 的坑：独立跑 `pnpm verify:core` 时
+    没有 `--user-data-dir` 开关，于是走 `app.setPath('userData', sandbox)` ——
+    而 Windows 上 safeStorage 的 OSCrypt 密钥存在 **Chromium 启动早期就定下的**
+    那个 userData 的 `Local State` 里，setPath 改不动它。
+    结果是：数据库在沙箱里，而解 vault.key 的密钥在默认 userData 里，
+    两者是分开的。子进程无论用哪个 userData 都凑不齐这两样。
+
+    verify-ui.mjs 那边两个进程都带着同一个 `--user-data-dir`，
+    所以端到端只能放在那儿跑。
+
+    🔴 第一版把它写在这里，结果是 CLI 根本没起来，而「磁盘上搜不到 Key」
+    那条却 **PASS 了** —— 它是空过的。断言够不着它要守的分支时，
+    看起来和真的通过一模一样（HANDOFF §8）。
+  */
 
   // --- 删除变量时绑定要跟着走 -----------------------------------------------
   const bindingsBeforeDelete = cred.previewCredentialSync(primary.id).targets.length
