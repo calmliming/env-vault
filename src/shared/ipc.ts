@@ -24,6 +24,8 @@ export const CHANNELS = {
   dialogSelectDirectory: 'dialog:select-directory',
   projectsList: 'projects:list',
   projectsPreview: 'projects:preview',
+  projectsDiscover: 'projects:discover',
+  projectsImportBulk: 'projects:importBulk',
   projectsImport: 'projects:import',
   projectsRemove: 'projects:remove',
   projectsRescan: 'projects:rescan',
@@ -178,6 +180,39 @@ export interface ScanPreview {
   totalEntries: number
   /** 这个路径已经被纳管过了。 */
   alreadyImported: boolean
+}
+
+/**
+ * 从一个父目录发现出来的、可以纳管的项目（阶段 6）。
+ * 每一项都是**独立的仓库**，各自有正确的 gitRoot —— 这是它存在的理由，见
+ * `env/discover.ts` 顶部。
+ */
+export interface DiscoveredProjectPreview {
+  rootPath: string
+  suggestedName: string
+  /** 不在任何 Git 仓库里。仍可纳管，但安全检查那一半会如实说「查不了」。 */
+  isGitRepo: boolean
+  alreadyImported: boolean
+  files: ScanPreviewFile[]
+  totalEntries: number
+  /** 这个仓库自己的扫描触到了上限。 */
+  truncated: boolean
+}
+
+export interface DiscoveryPreview {
+  /** 选中的父目录。 */
+  rootPath: string
+  /** 选中目录本身就是一个仓库，此时 projects 只有它一个。 */
+  startIsRepo: boolean
+  /** 发现阶段触到了上限，还有仓库没找出来。 */
+  truncated: boolean
+  projects: DiscoveredProjectPreview[]
+}
+
+export interface BulkImportResult {
+  imported: ProjectSummary[]
+  /** 没导进来的，以及为什么。🔴 逐个报，不是整批失败。 */
+  skipped: { rootPath: string; reason: string }[]
 }
 
 export interface ImportProjectRequest {
@@ -768,6 +803,17 @@ export interface IpcContract {
   [CHANNELS.projectsList]: { request: void; response: ProjectSummary[] }
   [CHANNELS.projectsPreview]: { request: { rootPath: string }; response: ScanPreview }
   [CHANNELS.projectsImport]: { request: ImportProjectRequest; response: ProjectSummary }
+  /**
+   * 从一个父目录发现多个仓库（阶段 6）。只读，不写库。
+   * 🔴 每个发现出来的项目都是独立仓库，各自有正确的 gitRoot ——
+   * 那正是这条通道存在的理由，见 `env/discover.ts` 顶部。
+   */
+  [CHANNELS.projectsDiscover]: { request: { rootPath: string }; response: DiscoveryPreview }
+  /** 批量纳管。逐项目一个事务，撞车的跳过并逐个报出来，不整批失败。 */
+  [CHANNELS.projectsImportBulk]: {
+    request: { projects: ImportProjectRequest[] }
+    response: BulkImportResult
+  }
   [CHANNELS.projectsRemove]: { request: { projectId: number }; response: { removed: boolean } }
   [CHANNELS.projectsRescan]: { request: { projectId: number }; response: RescanResult }
   [CHANNELS.entriesList]: { request: EntriesQuery; response: ConfigEntryView[] }
@@ -967,6 +1013,10 @@ export interface EnvVaultApi {
   listProjects(): Promise<IpcResult<ProjectSummary[]>>
   previewProject(rootPath: string): Promise<IpcResult<ScanPreview>>
   importProject(request: ImportProjectRequest): Promise<IpcResult<ProjectSummary>>
+  /** 从一个父目录发现多个仓库，每个各自成为一个项目。只读。 */
+  discoverProjects(rootPath: string): Promise<IpcResult<DiscoveryPreview>>
+  /** 批量纳管。跳过的会逐个报出来，不是整批失败。 */
+  importProjects(projects: ImportProjectRequest[]): Promise<IpcResult<BulkImportResult>>
   removeProject(projectId: number): Promise<IpcResult<{ removed: boolean }>>
   rescanProject(projectId: number): Promise<IpcResult<RescanResult>>
   listEntries(query: EntriesQuery): Promise<IpcResult<ConfigEntryView[]>>

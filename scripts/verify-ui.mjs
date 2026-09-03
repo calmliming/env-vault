@@ -160,9 +160,10 @@ async function runChecks() {
     // 阶段 3 收尾 +validateCredential（33→34）、4a +scanSecurity（→35）、
     // 4b +listCredentialVersions/copyEntryValue/copyCredentialKey（→38）、
     // 5b +previewTemplate/writeTemplate（→40）、
-    // 5c +previewExport/exportPackage/pickPackage/previewImport/importPackage（→45）。
+    // 5c +previewExport/exportPackage/pickPackage/previewImport/importPackage（→45）、
+    // 阶段 6 +discoverProjects/importProjects（→47）。
     // 数字写死是有意的：桥上多一个方法就红一次，逼人过一眼那是不是该暴露的东西。
-    isolation.bridgeType === 'object' && isolation.bridgeKeys.length === 45,
+    isolation.bridgeType === 'object' && isolation.bridgeKeys.length === 47,
     `${isolation.bridgeKeys.length} 个：${isolation.bridgeKeys.join(', ')}`
   )
 

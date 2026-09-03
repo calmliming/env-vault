@@ -318,6 +318,31 @@ export function registerIpcHandlers(): void {
 
   // 下面三个都会改变"有哪些文件、它们的基准哈希是什么"，
   // 所以每个都要重建监听集合。漏掉任何一个都会让监听静默失准。
+  handle(CHANNELS.projectsDiscover, (request) => {
+    const body = asRecord(request)
+    return repo.discoverProjectsPreview(asDirectoryPath(body.rootPath, 'rootPath'))
+  })
+
+  handle(CHANNELS.projectsImportBulk, (request) => {
+    const body = asRecord(request)
+    if (!Array.isArray(body.projects)) {
+      throw new RepositoryError('INVALID_ARGUMENT', '参数 projects 必须是数组')
+    }
+    const result = repo.importProjects(
+      body.projects.map((item) => {
+        const project = asRecord(item)
+        return {
+          // 逐个走同一道路径校验：批量不是放宽校验的理由。
+          rootPath: asDirectoryPath(project.rootPath, 'projects[].rootPath'),
+          name: typeof project.name === 'string' ? project.name.slice(0, 120) : '',
+          includePaths: asStringArray(project.includePaths, 'projects[].includePaths')
+        }
+      })
+    )
+    void refreshWatchTargets()
+    return result
+  })
+
   handle(CHANNELS.projectsImport, (request) => {
     const body = asRecord(request)
     const name = typeof body.name === 'string' ? body.name.slice(0, 120) : ''

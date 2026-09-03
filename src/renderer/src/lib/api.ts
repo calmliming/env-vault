@@ -63,6 +63,9 @@ export const bridge = {
   previewProject: (rootPath: string) => call(() => window.envvault.previewProject(rootPath)),
   importProject: (request: ImportProjectRequest) =>
     call(() => window.envvault.importProject(request)),
+  discoverProjects: (rootPath: string) => call(() => window.envvault.discoverProjects(rootPath)),
+  importProjects: (projects: ImportProjectRequest[]) =>
+    call(() => window.envvault.importProjects(projects)),
   removeProject: (projectId: number) => call(() => window.envvault.removeProject(projectId)),
   rescanProject: (projectId: number) => call(() => window.envvault.rescanProject(projectId)),
   listEntries: (query: EntriesQuery) => call(() => window.envvault.listEntries(query)),

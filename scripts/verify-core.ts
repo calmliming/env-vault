@@ -86,6 +86,15 @@ if (!hasUserDataDirSwitch) app.setPath('userData', sandbox)
 /** 被扫描的样例项目。放在沙箱里，界面验收会继续用它。 */
 const fixtureRoot = join(sandbox, 'fixture-project')
 
+/** 阶段 6：一个装着多个仓库的目录，自己也是仓库。 */
+const workspaceRoot = join(sandbox, 'workspace')
+
+/** 换行符。写成常量而不是字面量，免得被某一层转义处理搅乱。 */
+const NEWLINE = String.fromCharCode(10)
+
+/** repo-a 里那把「已提交又补进 .gitignore」的假 Key。 */
+const WORKSPACE_KEY = 'sk-proj-workspaceaaaaaaaaaaaaaaaaaa'
+
 app.whenReady().then(async () => {
   try {
     // `run` 从阶段 3 收尾起是异步的 —— 厂商验证那一节要 await 一个（假的）请求。
@@ -179,6 +188,50 @@ function buildFixture(): void {
   writeFileSync(join(fixtureRoot, 'node_modules', 'pkg', '.env'), 'GHOST=1\n')
 
   buildGitFixture()
+  buildWorkspaceFixture()
+}
+
+/**
+ * 阶段 6 专用：一个**装着多个仓库**的目录，而且它自己也是个仓库。
+ *
+ * 这是「问错仓库」缺陷最容易发生的布局：`~/code` 自己 git init 过，
+ * 底下放着一堆 clone。把它整个当成一个项目纳管，repo-a 里那个
+ * 「已提交又补进 .gitignore」的文件在**外层**仓库看来永远是「未跟踪」，
+ * 于是那条 critical 静默消失。
+ *
+ * 🔴 单独造一份，不动 fixtureRoot —— 样例数据是共享的，
+ * 往现有 fixture 里加仓库会弄红一堆按数量写死的断言（§8）。
+ */
+function buildWorkspaceFixture(): void {
+  const git = (cwd: string, ...args: string[]): void => {
+    execFileSync('git', ['-c', 'user.name=verify', '-c', 'user.email=verify@example.com', ...args], {
+      cwd,
+      stdio: 'ignore'
+    })
+  }
+
+  mkdirSync(workspaceRoot, { recursive: true })
+  writeFileSync(join(workspaceRoot, '.env'), `WORKSPACE_LEVEL=1${NEWLINE}`)
+  git(workspaceRoot, 'init', '-b', 'main')
+  git(workspaceRoot, 'add', '.env')
+  git(workspaceRoot, 'commit', '-m', 'workspace')
+
+  // repo-a：复刻那个「假安心」——先提交，后补 .gitignore。
+  const repoA = join(workspaceRoot, 'repo-a')
+  mkdirSync(repoA, { recursive: true })
+  writeFileSync(join(repoA, '.env.local'), `OPENAI_API_KEY=${WORKSPACE_KEY}${NEWLINE}`)
+  writeFileSync(join(repoA, '.gitignore'), `.env.local${NEWLINE}`)
+  git(repoA, 'init', '-b', 'main')
+  git(repoA, 'add', '.gitignore')
+  git(repoA, 'add', '-f', '.env.local')
+  git(repoA, 'commit', '-m', 'repo-a')
+
+  const repoB = join(workspaceRoot, 'repo-b')
+  mkdirSync(repoB, { recursive: true })
+  writeFileSync(join(repoB, '.env'), `PORT=4000${NEWLINE}`)
+  git(repoB, 'init', '-b', 'main')
+  git(repoB, 'add', '.env')
+  git(repoB, 'commit', '-m', 'repo-b')
 }
 
 /**
@@ -1980,6 +2033,84 @@ async function run(): Promise<void> {
   )
   repo.removeProject(leakProject.id)
   rmSync(leakRoot, { recursive: true, force: true })
+
+  // --- 🔴 一次纳管多个项目：每个仓库各自一个 gitRoot（阶段 6）-------------
+  //
+  // 这一段守的是一个**正确性**问题，不是"省几次点击"：一个项目只存一个
+  // git_root，而安全检查拿它做全部判断。十几个仓库塞进一个项目 =
+  // 对着错误的仓库问跟踪状态 = 那条最有价值的 critical 静默消失。
+
+  const discovered = repo.discoverProjectsPreview(workspaceRoot)
+  check(
+    '发现出选中目录自己 + 底下两个仓库，一共三个项目',
+    discovered.projects.length === 3 && discovered.startIsRepo === true,
+    discovered.projects.map((p) => `${p.suggestedName}(${p.isGitRepo ? 'git' : '非git'})`).join(', ')
+  )
+
+  const wsSelf = discovered.projects.find((p) => p.rootPath === workspaceRoot)!
+  check(
+    '🔴 父目录那个项目里**没有**子仓库的文件（扫描在嵌套仓库处停了）',
+    wsSelf.files.length === 1 && wsSelf.files[0]?.relativePath === '.env',
+    wsSelf.files.map((f) => f.relativePath).join(', ') || '（一个文件都没有）'
+  )
+
+  const bulk = repo.importProjects(
+    discovered.projects.map((project) => ({
+      rootPath: project.rootPath,
+      name: project.suggestedName,
+      includePaths: project.files.map((f) => f.absolutePath)
+    }))
+  )
+  check(
+    '批量纳管把三个项目都建起来了',
+    bulk.imported.length === 3 && bulk.skipped.length === 0,
+    `导入 ${bulk.imported.length}、跳过 ${bulk.skipped.length}`
+  )
+
+  const repoAProject = bulk.imported.find((p) => p.name === 'repo-a')!
+  const repoBProject = bulk.imported.find((p) => p.name === 'repo-b')!
+  check(
+    '🔴 每个项目的 gitRoot 是**它自己**的仓库根，不是父目录',
+    repoAProject.gitRoot === join(workspaceRoot, 'repo-a') &&
+      repoBProject.gitRoot === join(workspaceRoot, 'repo-b'),
+    `repo-a=${repoAProject.gitRoot} / repo-b=${repoBProject.gitRoot}`
+  )
+
+  // 🔴 这一条才是全部理由：那把「已提交又补进 .gitignore」的 Key
+  // 必须在 repo-a **自己的**仓库里被判成 critical。
+  // 如果三个仓库共用父目录当 gitRoot，它在父仓库看来是「未跟踪」，
+  // tracked=false → 判定表走不到那一条 → 这条 critical 整个消失。
+  const repoAReport = await security.scanSecurity(repoAProject.id)
+  const repoALocal = repoAReport.files.find((f) => f.relativePath === '.env.local')
+  check(
+    '🔴 「已提交又补进 .gitignore」在子仓库里照样报得出来',
+    repoALocal?.level === 'critical' &&
+      repoALocal.tracked === true &&
+      repoALocal.ignored === true,
+    `level=${repoALocal?.level} tracked=${repoALocal?.tracked} ignored=${repoALocal?.ignored}`
+  )
+  check(
+    '🔴 而且 Git 状态是查得了的（不是退化成 unknown 蒙混过关）',
+    repoAReport.gitUnavailable === null,
+    repoAReport.gitUnavailable ?? '查得了'
+  )
+
+  check(
+    '重复批量导入会逐个跳过，不是整批失败',
+    (() => {
+      const again = repo.importProjects([
+        {
+          rootPath: repoAProject.absolutePath,
+          name: 'repo-a',
+          includePaths: []
+        }
+      ])
+      return again.imported.length === 0 && again.skipped.length === 1
+    })(),
+    '已存在的逐个报出来'
+  )
+
+  for (const project of bulk.imported) repo.removeProject(project.id)
 
   // --- 🔴 加密导出：包里搜不到明文（阶段 5c）--------------------------------
   const PASSPHRASE = 'a-long-enough-test-passphrase'

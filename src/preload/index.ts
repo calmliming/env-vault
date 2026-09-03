@@ -17,6 +17,8 @@ import {
   PUSH_CHANNELS,
   type ActivityRecord,
   type AdoptResult,
+  type BulkImportResult,
+  type DiscoveryPreview,
   type AppHealth,
   type ClipboardCopyResult,
   type ConfigEntryView,
@@ -73,6 +75,15 @@ const api: EnvVaultApi = {
     ipcRenderer.invoke(CHANNELS.projectsPreview, { rootPath }) as Promise<IpcResult<ScanPreview>>,
   importProject: (request: ImportProjectRequest) =>
     ipcRenderer.invoke(CHANNELS.projectsImport, request) as Promise<IpcResult<ProjectSummary>>,
+  // 阶段 6：从一个父目录发现多个仓库，各自成为一个项目（各自有正确的 gitRoot）。
+  discoverProjects: (rootPath: string) =>
+    ipcRenderer.invoke(CHANNELS.projectsDiscover, { rootPath }) as Promise<
+      IpcResult<DiscoveryPreview>
+    >,
+  importProjects: (projects: ImportProjectRequest[]) =>
+    ipcRenderer.invoke(CHANNELS.projectsImportBulk, { projects }) as Promise<
+      IpcResult<BulkImportResult>
+    >,
   removeProject: (projectId: number) =>
     ipcRenderer.invoke(CHANNELS.projectsRemove, { projectId }) as Promise<
       IpcResult<{ removed: boolean }>

@@ -12,7 +12,7 @@
 
 import { app } from 'electron'
 import { existsSync, readFileSync } from 'node:fs'
-import { basename, join } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 import { getDatabase } from './index'
 import * as vault from '../security/vault'
 import { VaultError } from '../security/vault'
@@ -26,6 +26,7 @@ import {
   removeEntries,
   serializeEnv
 } from '../env/document.ts'
+import { discoverProjects } from '../env/discover.ts'
 import {
   PARSER_VERSION,
   currentFileHash,
@@ -41,6 +42,8 @@ import {
   MASKED_PLACEHOLDER,
   type ActivityRecord,
   type AdoptResult,
+  type BulkImportResult,
+  type DiscoveryPreview,
   type ConfigEntryView,
   type EntriesQuery,
   type EntryMutationResult,
@@ -87,9 +90,64 @@ export function previewProject(rootPath: string): ScanPreview {
   }
 }
 
+/**
+ * 从一个父目录发现多个可纳管的项目（阶段 6）。
+ *
+ * 🔴 两阶段：先只找 `.git`（不读任何文件），再对每个仓库根各自 `scanProject`。
+ * 一次深扫会让所有仓库共享同一份 maxFiles/maxDepth 预算，后面的仓库被静默丢掉。
+ * 理由完整写在 `env/discover.ts` 顶部。
+ */
+export function discoverProjectsPreview(rootPath: string): DiscoveryPreview {
+  const discovery = discoverProjects(rootPath)
+  return {
+    rootPath: resolve(rootPath),
+    startIsRepo: discovery.startIsRepo,
+    truncated: discovery.truncated,
+    projects: discovery.projects.map((project) => {
+      const preview = previewProject(project.rootPath)
+      return {
+        rootPath: preview.rootPath,
+        suggestedName: project.name || preview.suggestedName,
+        isGitRepo: project.isGitRepo,
+        alreadyImported: preview.alreadyImported,
+        files: preview.files,
+        totalEntries: preview.totalEntries,
+        truncated: preview.truncated
+      }
+    })
+  }
+}
+
 // ---------------------------------------------------------------------------
 // 导入
 // ---------------------------------------------------------------------------
+
+/**
+ * 批量纳管。
+ *
+ * 🔴 **逐项目一个事务，不是一个大事务。** 撞到一个已经纳管过的路径不该让
+ * 另外十几个一起失败 —— 那会逼用户去猜"到底哪个出了问题"。
+ * 跳过的逐个报出来。
+ */
+export function importProjects(requests: ImportProjectRequest[]): BulkImportResult {
+  requireUnlocked()
+
+  const imported: ProjectSummary[] = []
+  const skipped: BulkImportResult['skipped'] = []
+
+  for (const request of requests) {
+    try {
+      imported.push(importProject(request))
+    } catch (error) {
+      skipped.push({
+        rootPath: request.rootPath,
+        reason: error instanceof Error ? error.message : '导入失败'
+      })
+    }
+  }
+
+  return { imported, skipped }
+}
 
 export function importProject(request: ImportProjectRequest): ProjectSummary {
   requireUnlocked()

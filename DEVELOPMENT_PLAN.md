@@ -483,5 +483,8 @@ redact(value)
     > 但那是扫描层和数据模型的活，和导出无关，要做就单独一刀。
     > 也**不是**「从别的工具的格式导入」—— 那和第 11 条的外部 Secret Manager
     > 适配在意图上重叠。
-11. 外部 Secret Manager 适配（1Password / Bitwarden / Doppler）——
+11. ~~阶段 6：一次纳管多个项目。~~（已完成）不在原计划里，做它是因为它是
+    **正确性缺陷**不是功能缺失：一个项目只存一个 `git_root`，多仓库目录会让
+    「已提交又补进 .gitignore」被判成 ok。见 `docs/PHASE-6.md`。
+12. 外部 Secret Manager 适配（1Password / Bitwarden / Doppler）——
     需要机器上装有各自的 CLI，动手前先想清楚怎么验收。

@@ -28,6 +28,7 @@ Electron + React + TypeScript，数据全部留在本机，敏感值加密存储
 | 5a CLI 注入 | ✅ | [PHASE-5A.md](PHASE-5A.md) |
 | 5b `.env.example` 生成 | ✅ | [PHASE-5B.md](PHASE-5B.md) |
 | 5c 加密导出与导入导出包 | ✅ | [PHASE-5C.md](PHASE-5C.md) |
+| 6 一次纳管多个项目（正确性修复） | ✅ | [PHASE-6.md](PHASE-6.md) |
 
 阶段 4 的验收句本来就是两半，所以拆成了两刀：
 「被 Git 跟踪的敏感文件必须显示风险」（4a）+
@@ -46,7 +47,8 @@ Electron + React + TypeScript，数据全部留在本机，敏感值加密存储
 复制到剪贴板并在 30 秒后自动清理 →
 用 `envvault run -- <命令>` 把一个环境注入子进程，不落盘明文 →
 按某份 `.env` 生成一份不含值的 `.env.example`（连注释里被注释掉的 Key 一起擦掉）→
-把选中项目加密导出成一个口令保护的包，并在另一台机器上导回来。
+把选中项目加密导出成一个口令保护的包，并在另一台机器上导回来 →
+选一个装着多个仓库的目录，一次把它们各自纳管成独立项目。
 
 **界面上没有任何"尚未接入"的占位了** —— MVP 清单的每一条都真的能用。
 **没有任何地方假装完成了实际没做的事**，请保持这条。
@@ -55,8 +57,8 @@ Electron + React + TypeScript，数据全部留在本机，敏感值加密存储
 
 ```powershell
 pnpm dev       # 开发模式，Vite HMR + Electron
-pnpm verify    # 全套：223 单元测试 + 214 核心断言 + 129 界面断言，约 2 分钟
-               # 单元测试是 222 通过 + 1 跳过：write.test.ts 的 POSIX 权限位，
+pnpm verify    # 全套：234 单元测试 + 221 核心断言 + 129 界面断言，约 2 分钟
+               # 单元测试是 233 通过 + 1 跳过：write.test.ts 的 POSIX 权限位，
                # Windows 上恒跳，skip 里写了理由。这是目前唯一一条跳过，多出来就要查。
 
 # CLI（阶段 5a）。打包后是 EnvVault.exe run --…
@@ -161,6 +163,8 @@ src/main/
                      跑遍所有分支也不出网。🔴 结论分「有/没有」两类，见 §6
   env/               ⚠️ 这个目录有特殊约定，见 §5
     document.ts      保格式的 .env 解析/写回/删行 + 格式骨架
+    discover.ts      从父目录发现多个仓库根（纯函数，只找 .git 不读文件）。
+                     🔴 一个项目一个 gitRoot，理由见 PHASE-6 §2
     template.ts      由一份 .env 生成不含值的 .env.example（纯函数）。
                      🔴 注释里的赋值也要脱敏 + 高敏值兜底，见 §5
     classify.ts      值类型与敏感等级
@@ -266,6 +270,13 @@ Node 的类型剥离是 strip-only 的，会报 `ERR_UNSUPPORTED_TYPESCRIPT_SYNT
 注释里的 Key 不是 entry，于是照样判 `ok`。
 `env/template.ts` 里 `redactCommentText` 负责擦，`findLeaks` 负责兜底
 （拿源文件的高敏值反查生成结果，命中就拒绝写盘）。详见 PHASE-5B §3、§4。
+
+**🔴 一个项目只存一个 `git_root`，所以一个项目只能是一个仓库。**
+`security.ts` 拿它做全部 Git 判断。把多个仓库塞进一个项目，子仓库里的文件会拿
+**父仓库**去问跟踪状态 —— 在父仓库看来它们永远「未跟踪」，于是判定表把
+「已提交又补进 .gitignore」判成 **ok**（不是报错，是判成安全的）。
+`env/discover.ts` 负责发现，`scanProject` 的 `walk()` 负责**在嵌套仓库处停**，
+两边缺一不可。详见 PHASE-6。
 
 **🔴 导出是最宽的一条明文出口，导入则一个磁盘文件都不许碰。**
 导出一次放走选中项目的**全部值**（勾了凭据还带走全部模型 Key），

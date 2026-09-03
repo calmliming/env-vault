@@ -22,7 +22,7 @@ export const PARSER_VERSION = 1
  * 不进去找的目录。这些地方要么装的是依赖，要么是构建产物 ——
  * 里面的 `.env` 不是用户的源文件，纳管只会在下次 `npm install` 后变成幽灵记录。
  */
-const SKIP_DIRECTORIES = new Set([
+export const SKIP_DIRECTORIES = new Set([
   'node_modules',
   '.git',
   '.hg',
@@ -92,6 +92,12 @@ export interface ScanResult {
   /** 项目所在的 Git 仓库根目录，找不到则为 null。 */
   gitRoot: string | null
   files: ScannedFile[]
+  /**
+   * 遍历中撞到、并且**没有进去**的嵌套仓库（子模块或独立 clone）。
+   * 它们里面的 `.env*` 不属于这个项目 —— 界面要如实说出来，
+   * 让用户知道那几个仓库需要单独纳管，而不是以为扫漏了。
+   */
+  nestedRepos: string[]
   /** 是否因为触到 maxFiles/maxDepth 上限而没扫全。 */
   truncated: boolean
   scannedAt: number
@@ -118,6 +124,7 @@ export function scanProject(rootPath: string, options: ScanOptions = {}): ScanRe
   const root = resolve(rootPath)
 
   const files: ScannedFile[] = []
+  const nestedRepos: string[] = []
   let truncated = false
 
   const walk = (dir: string, depth: number): void => {
@@ -154,7 +161,19 @@ export function scanProject(rootPath: string, options: ScanOptions = {}): ScanRe
       // 不跟随符号链接：指回上层的链接会让遍历绕不出来。
       if (!dirent.isDirectory() || dirent.isSymbolicLink()) continue
       if (SKIP_DIRECTORIES.has(dirent.name)) continue
-      walk(join(dir, dirent.name), depth + 1)
+
+      const child = join(dir, dirent.name)
+      // 🔴 嵌套仓库（子模块 / 独立 clone）到此为止。
+      //
+      // 一个项目只存**一个** git_root，而安全检查拿它做全部判断。
+      // 把子模块里的 .env 收进父项目，等于拿**父仓库**去问它的跟踪状态 ——
+      // 它在父仓库看来永远「未跟踪」，于是「已提交又补进 .gitignore」
+      // 那条 critical 会静默消失。宁可不收，让它作为独立项目被纳管。
+      if (existsSync(join(child, '.git'))) {
+        nestedRepos.push(child)
+        continue
+      }
+      walk(child, depth + 1)
     }
   }
 
@@ -164,6 +183,7 @@ export function scanProject(rootPath: string, options: ScanOptions = {}): ScanRe
     rootPath: root,
     gitRoot: findGitRoot(root),
     files,
+    nestedRepos,
     truncated,
     scannedAt: Date.now()
   }
