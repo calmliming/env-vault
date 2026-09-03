@@ -23,7 +23,13 @@
   --blue-soft: #eef1f2;
   --yellow: #81754e;
   --yellow-soft: #f2f0e7;
-  --sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  /*
+   * 中文字体必须显式钉住。原来的栈全是拉丁字体，汉字一路落到通用 sans-serif，
+   * 落到哪个字体由 Chromium 的默认设置决定 —— 不可控，且 YaHei / YaHei UI
+   * 在 12px 上的字形密度差别肉眼可见。
+   */
+  --sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI',
+    'Microsoft YaHei UI', 'Microsoft YaHei', 'PingFang SC', 'Noto Sans CJK SC', sans-serif;
   --mono: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
 }
 
@@ -47,22 +53,18 @@
  */
 html, body { height: 100%; overflow: hidden; }
 html { background: var(--canvas); }
+/*
+ * 🔴 这里刻意没有 `-webkit-font-smoothing: antialiased`。
+ *
+ * 那个属性是给 macOS Retina 用的，但 Chromium 在 Windows 上同样认账：
+ * 认了就会关掉 ClearType 次像素抗锯齿、强制灰度抗锯齿，笔画变细、边缘发糊。
+ * 本应用主要跑在 Windows 上，交给系统默认的渲染就是最清晰的。别加回来。
+ */
 body {
   margin: 0;
   color: var(--ink);
   background: var(--canvas);
   font-family: var(--sans);
-  -webkit-font-smoothing: antialiased;
-}
-/* signature rail：整个界面唯一的标志性元素，别再加第二条。 */
-body::before {
-  content: '';
-  position: fixed;
-  inset: 0 auto 0 0;
-  z-index: 50;
-  width: 2px;
-  background: #708079;
-  pointer-events: none;
 }
 button, input, select { font: inherit; }
 button { cursor: pointer; }

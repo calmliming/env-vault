@@ -22,14 +22,13 @@
         --blue-soft: #eef1f2;
         --yellow: #81754e;
         --yellow-soft: #f2f0e7;
-        --sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        --sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif;
         --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
       }
 
       * { box-sizing: border-box; }
       html { background: var(--canvas); }
-      body { margin: 0; color: var(--ink); background: var(--canvas); font-family: var(--sans); -webkit-font-smoothing: antialiased; }
-      body::before { content: ""; position: fixed; inset: 0 auto 0 0; z-index: 50; width: 2px; background: #708079; pointer-events: none; }
+      body { margin: 0; color: var(--ink); background: var(--canvas); font-family: var(--sans); }
       button, input { font: inherit; }
       button { cursor: pointer; }
       .app-shell { min-height: 100dvh; display: grid; grid-template-columns: 256px minmax(0, 1fr); }
