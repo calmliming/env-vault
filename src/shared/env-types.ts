@@ -8,7 +8,16 @@
  * 各留一份又必然会漂移。
  */
 
-export type ValueType = 'secret' | 'url' | 'number' | 'boolean' | 'text'
+/**
+ * 运行时数组在前、类型从它推导 —— 界面要按类型做筛选，得能遍历这五个值。
+ * 反过来（先写 union 再手抄一份数组）迟早会漏掉新增的那一档。
+ *
+ * ⚠️ 这个文件被 `env/classify.ts` 以相对路径 import，要能被 `node --test`
+ * 直接跑：不要给它加任何 import，也不要用 `@shared/*` 别名。
+ */
+export const VALUE_TYPES = ['secret', 'url', 'number', 'boolean', 'text'] as const
+
+export type ValueType = (typeof VALUE_TYPES)[number]
 
 export type Sensitivity =
   /** 普通配置，展示时不掩码。 */

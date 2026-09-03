@@ -397,7 +397,69 @@ h1 { font-size: 35px; letter-spacing: 0; line-height: 1.05; margin: 8px 0 9px; }
   align-items: center;
   padding: 12px 15px;
   gap: 12px;
+  /* 多了一组类型筛选之后，窄窗口下三样并排会把搜索框压扁 —— 允许换行。 */
+  flex-wrap: wrap;
   border-bottom: 1px solid var(--line);
+}
+
+/*
+ * 类型筛选。刻意不长得像上面的 .env-tab：
+ * 环境和类型是两个正交的维度，做成同一种控件会让人以为它们互斥。
+ * 每一档直接借 .type-tag 已有的配色，和表格里那一列的颜色一一对应。
+ */
+.type-filter { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.type-chip {
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 4px 9px;
+  background: transparent;
+  color: #83887f;
+  font-size: 11px;
+  transition: 0.18s ease;
+}
+.type-chip:hover { border-color: var(--line-strong); color: var(--ink); }
+.type-chip.active { border-color: currentColor; font-weight: 600; }
+.type-chip.active:not(.secret):not(.url):not(.number):not(.boolean):not(.text) {
+  color: var(--ink);
+  background: #ecede9;
+  border-color: transparent;
+}
+.type-chip.secret.active { background: var(--orange-soft); color: #a4562f; }
+.type-chip.url.active { background: var(--blue-soft); color: var(--blue); }
+.type-chip.number.active { background: var(--yellow-soft); color: var(--yellow); }
+.type-chip.boolean.active { background: var(--green-soft); color: var(--green); }
+.type-chip.text.active { background: #f1f0ec; color: var(--muted); }
+
+/* --- 分页条（变量表与操作记录共用）--------------------------------------- */
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 11px 15px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 11px;
+}
+.pagination-range { font: 11px var(--mono); }
+.pagination-controls { display: flex; align-items: center; gap: 14px; }
+.pagination-size { display: flex; align-items: center; gap: 6px; }
+.pagination-size select {
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--ink);
+  padding: 3px 5px;
+  font: 11px var(--mono);
+}
+.pagination-pager { display: flex; align-items: center; gap: 2px; }
+/* 页码是等宽 + 定宽：翻到两位数时整排按钮不该跟着左右挪。 */
+.pagination-page {
+  min-width: 52px;
+  text-align: center;
+  font: 11px var(--mono);
+  color: var(--ink);
 }
 .search {
   display: flex;

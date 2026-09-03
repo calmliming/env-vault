@@ -11,8 +11,31 @@ import {
   IconTrash,
   IconX
 } from '../components/icons'
+import { Pagination } from '../components/Pagination'
+import { useIntPref } from '../hooks/usePrefs'
+import { PREF_KEYS } from '../lib/prefs'
 import type { Workspace } from '../hooks/useWorkspace'
 import type { ConfigEntryView, CredentialSuggestion, EnvFileView } from '@shared/ipc'
+import { VALUE_TYPES, type ValueType } from '@shared/env-types'
+
+/**
+ * 🔴 默认每页 25，别往下调。
+ *
+ * verify-ui 有三条断言构成了这个数的下限：解锁后 13 个 key 必须全在
+ * （:216-231）、清空搜索后行数要回到 13（:291-295）、环境筛选后 0 < n < 12
+ * （:303-306）。页大小小于 13 会让第一页装不下，那三条一起红。
+ * 25 留了大约一倍余量。
+ */
+const ENTRIES_PAGE_SIZES = [25, 50, 100, 200] as const
+const ENTRIES_PAGE_SIZE_DEFAULT = 25
+
+const TYPE_LABELS: Record<ValueType, string> = {
+  secret: '敏感',
+  url: '地址',
+  number: '数字',
+  boolean: '布尔',
+  text: '文本'
+}
 
 interface OverviewViewProps {
   workspace: Workspace
@@ -55,6 +78,15 @@ export function OverviewView({
   const [editing, setEditing] = useState<{ id: number; draft: string } | null>(null)
   const [saving, setSaving] = useState(false)
 
+  /** null = 不按类型筛。分页页码 1 起；每页条数记在 localStorage 里。 */
+  const [typeFilter, setTypeFilter] = useState<ValueType | null>(null)
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useIntPref(
+    PREF_KEYS.entriesPageSize,
+    ENTRIES_PAGE_SIZE_DEFAULT,
+    ENTRIES_PAGE_SIZES
+  )
+
   /**
    * 文件的实时状态。
    *
@@ -86,17 +118,45 @@ export function OverviewView({
     void loadSuggestions()
   }, [loadSuggestions, entries])
 
+  /**
+   * 派生链是 entries → 类型筛选 → 搜索 → 分页切片，顺序不能乱：
+   * 分页必须是最后一步，否则「共 N 条」算的是筛选前的总数，翻页会翻出空页。
+   */
+  const typeFiltered = useMemo(
+    () => (typeFilter === null ? entries : entries.filter((e) => e.valueType === typeFilter)),
+    [entries, typeFilter]
+  )
+
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase()
-    if (!needle) return entries
+    if (!needle) return typeFiltered
     // 按 key + 来源文件 + 类型匹配。不匹配 displayValue：
     // 敏感项的 displayValue 是掩码占位符，拿它做匹配等于全体命中或全体落空。
-    return entries.filter((entry) =>
+    return typeFiltered.filter((entry) =>
       `${entry.key} ${entry.sourceFile} ${entry.valueType} ${entry.environment}`
         .toLowerCase()
         .includes(needle)
     )
-  }, [entries, query])
+  }, [typeFiltered, query])
+
+  /**
+   * 🔴 页码越界要在渲染里夹住，不能只靠下面那个重置 effect。
+   *
+   * effect 是渲染**之后**才跑的。停在第 5 页时删掉最后一条，这一帧的
+   * `filtered` 已经只剩 4 页 —— 先渲染出一个空表格，effect 再把页码拨回来，
+   * 用户会看到一次空白闪烁。就地钳制则这一帧就是对的。
+   */
+  const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize))
+  const safePage = Math.min(page, pageCount)
+  const paged = useMemo(
+    () => filtered.slice((safePage - 1) * pageSize, safePage * pageSize),
+    [filtered, safePage, pageSize]
+  )
+
+  // 换项目、换环境、改搜索、改类型筛选，都得回到第一页。
+  useEffect(() => {
+    setPage(1)
+  }, [projectId, environment, query, typeFilter])
 
   async function toggleReveal(entry: ConfigEntryView): Promise<void> {
     if (revealed.has(entry.id)) {
@@ -362,6 +422,32 @@ export function OverviewView({
                 onChange={(e) => onQueryChange(e.target.value)}
               />
             </label>
+            {/*
+              类型筛选放在工具条里，环境标签页留在面板头 —— 两者都是「筛选」，
+              靠位置和配色区分：环境用 yellow-soft 的标签页，类型直接复用
+              .type-tag 每一档已有的颜色，扫一眼就知道点的是哪一维。
+            */}
+            <div className="type-filter" role="group" aria-label="按类型筛选">
+              <button
+                className={typeFilter === null ? 'type-chip active' : 'type-chip'}
+                aria-pressed={typeFilter === null}
+                onClick={() => setTypeFilter(null)}
+              >
+                全部类型
+              </button>
+              {VALUE_TYPES.map((type) => (
+                <button
+                  key={type}
+                  className={
+                    typeFilter === type ? `type-chip ${type} active` : `type-chip ${type}`
+                  }
+                  aria-pressed={typeFilter === type}
+                  onClick={() => setTypeFilter(typeFilter === type ? null : type)}
+                >
+                  {TYPE_LABELS[type]}
+                </button>
+              ))}
+            </div>
             <span className="tool-note">
               {locked
                 ? 'Vault 已锁定'
@@ -406,16 +492,26 @@ export function OverviewView({
                   </td>
                 </tr>
               )}
+              {/*
+                空态要分清「这个环境下一条都没有」和「筛掉了」——
+                后者说成前者会让人以为数据丢了，而不是自己加了个筛选条件。
+              */}
               {!locked && !error && !loading && filtered.length === 0 && (
                 <tr>
                   <td className="empty-row" colSpan={5}>
-                    {entries.length === 0 ? '这个环境下没有变量' : `没有匹配「${query}」的变量`}
+                    {entries.length === 0
+                      ? '这个环境下没有变量'
+                      : query.trim() !== '' && typeFilter !== null
+                        ? `没有匹配「${query}」且类型是「${TYPE_LABELS[typeFilter]}」的变量`
+                        : typeFilter !== null
+                          ? `这个环境下没有「${TYPE_LABELS[typeFilter]}」类型的变量`
+                          : `没有匹配「${query}」的变量`}
                   </td>
                 </tr>
               )}
               {!locked &&
                 !error &&
-                filtered.map((entry) => {
+                paged.map((entry) => {
                   const plain = revealed.get(entry.id)
                   const shown = plain ?? entry.displayValue
                   const fileBlocked = fileBlockedReason(entry)
@@ -573,6 +669,22 @@ export function OverviewView({
                 })}
             </tbody>
           </table>
+
+          {/* 锁着时表格里是一句提示不是数据，挂个分页条只会让人以为有内容。 */}
+          {!locked && !error && (
+            <Pagination
+              page={safePage}
+              pageSize={pageSize}
+              total={filtered.length}
+              pageSizeOptions={ENTRIES_PAGE_SIZES}
+              onPageChange={setPage}
+              onPageSizeChange={(size) => {
+                setPageSize(size)
+                setPage(1)
+              }}
+              label="变量列表"
+            />
+          )}
         </section>
 
         <div className="side-stack">
