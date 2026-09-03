@@ -225,6 +225,24 @@ export const IconSidebar: IconComponent = (props) => (
   </Svg>
 )
 
+// --- Vault 状态 -------------------------------------------------------------
+
+/** 已锁上。 */
+export const IconLock: IconComponent = (props) => (
+  <Svg {...props}>
+    <rect x="3.2" y="7" width="9.6" height="6.8" rx="1.6" />
+    <path d="M5.4 7V4.9a2.6 2.6 0 0 1 5.2 0V7" />
+  </Svg>
+)
+
+/** 已解锁 —— 锁梁向上翘开，和 IconLock 只差这一笔，状态一眼可辨。 */
+export const IconUnlock: IconComponent = (props) => (
+  <Svg {...props}>
+    <rect x="3.2" y="7" width="9.6" height="6.8" rx="1.6" />
+    <path d="M5.4 7V4.9a2.6 2.6 0 0 1 5.2 0" />
+  </Svg>
+)
+
 // --- 分页 -------------------------------------------------------------------
 
 export const IconChevronLeft: IconComponent = (props) => (

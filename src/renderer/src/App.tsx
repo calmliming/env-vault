@@ -4,8 +4,10 @@ import { Sidebar } from './components/Sidebar'
 import { Topbar } from './components/Topbar'
 import { useAppHealth } from './hooks/useAppHealth'
 import { useCredentials } from './hooks/useCredentials'
+import { useBoolPref } from './hooks/usePrefs'
 import { useWorkspace } from './hooks/useWorkspace'
 import { bridge } from './lib/api'
+import { PREF_KEYS } from './lib/prefs'
 import { BindCredentialModal } from './modals/BindCredentialModal'
 import { CredentialModal } from './modals/CredentialModal'
 import { CredentialSyncModal } from './modals/CredentialSyncModal'
@@ -52,6 +54,7 @@ function Workspace(): ReactNode {
   const [activeView, setActiveView] = useState<ViewId>('overview')
   const [query, setQuery] = useState('')
   const [vaultBusy, setVaultBusy] = useState(false)
+  const [sidebarCollapsed, setSidebarCollapsed] = useBoolPref(PREF_KEYS.sidebarCollapsed, false)
 
   /**
    * Vault 按钮按当前状态派发三种动作。
@@ -341,7 +344,12 @@ function Workspace(): ReactNode {
   }, [openModal, health, workspace.selectedProject, workspace.files])
 
   return (
-    <div className="app-shell">
+    /*
+      收起状态放在属性上而不是类名上，是为了让 CSS 里的
+      `.app-shell[data-sidebar='collapsed']`（0,2,0）压过
+      `@media (max-width:1100px)` 里的规则（0,1,0）—— 详见 global.css。
+    */
+    <div className="app-shell" data-sidebar={sidebarCollapsed ? 'collapsed' : 'expanded'}>
       <Sidebar
         activeView={activeView}
         onSelectView={setActiveView}
@@ -351,6 +359,8 @@ function Workspace(): ReactNode {
         vault={health?.vault ?? null}
         vaultBusy={vaultBusy}
         onVaultAction={() => void runVaultAction()}
+        collapsed={sidebarCollapsed}
+        onToggleCollapsed={() => setSidebarCollapsed(!sidebarCollapsed)}
       />
 
       <main className="main">

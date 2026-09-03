@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import type { ViewId } from '../views/registry'
 import { VIEWS } from '../views/registry'
-import { LogoMark } from './icons'
+import { IconLock, IconSidebar, IconUnlock, LogoMark } from './icons'
 import type { ProjectSummary, VaultStatus } from '@shared/ipc'
 
 interface SidebarProps {
@@ -13,6 +13,8 @@ interface SidebarProps {
   vault: VaultStatus | null
   vaultBusy: boolean
   onVaultAction(): void
+  collapsed: boolean
+  onToggleCollapsed(): void
 }
 
 export function Sidebar({
@@ -23,7 +25,9 @@ export function Sidebar({
   onSelectProject,
   vault,
   vaultBusy,
-  onVaultAction
+  onVaultAction,
+  collapsed,
+  onToggleCollapsed
 }: SidebarProps): ReactNode {
   const label = vaultLabel(vault)
 
@@ -41,6 +45,19 @@ export function Sidebar({
           <div className="brand-name">EnvVault</div>
           <span className="brand-meta">local workspace</span>
         </div>
+        {/*
+          🔴 收起按钮必须留在 .brand 里，不能进 .nav ——
+          verify-ui 断言 `.nav button` 恰好是 5 个（主导航五项，§5.1）。
+        */}
+        <button
+          className="sidebar-toggle"
+          onClick={onToggleCollapsed}
+          aria-expanded={!collapsed}
+          title={collapsed ? '展开侧栏' : '收起侧栏'}
+          aria-label={collapsed ? '展开侧栏' : '收起侧栏'}
+        >
+          <IconSidebar />
+        </button>
       </div>
 
       <div className="nav-label">工作台</div>
@@ -51,6 +68,8 @@ export function Sidebar({
             className={view.id === activeView ? 'active' : undefined}
             aria-current={view.id === activeView ? 'page' : undefined}
             onClick={() => onSelectView(view.id)}
+            // 收起后只剩图标，标签得靠原生 tooltip 补回来。
+            title={collapsed ? view.label : undefined}
           >
             <span className="nav-icon">
               <view.icon />
@@ -70,7 +89,8 @@ export function Sidebar({
             type="button"
             className={project.id === selectedProjectId ? 'project active' : 'project'}
             onClick={() => onSelectProject(project.id)}
-            title={project.absolutePath}
+            // 收起后项目名也没了，只剩一个点 —— tooltip 里得把名字带上。
+            title={collapsed ? `${project.name} · ${project.absolutePath}` : project.absolutePath}
           >
             {/* 有未纳入 Git 的风险时才变色，颜色在这里是信息不是装饰。 */}
             <span className={project.gitRoot ? 'project-dot' : 'project-dot orange'} />
@@ -80,15 +100,40 @@ export function Sidebar({
         ))}
       </div>
 
+      {/*
+        🔴 收起后这一块不能整个藏掉。
+        Vault 锁着的时候，「解锁」是这里唯一的入口 —— 藏掉它等于把用户关在
+        门外，逼他先展开侧栏才能干活。所以收起态只压缩表现：状态点留着
+        （锁没锁是必须一眼可见的信息），文字进 tooltip，按钮退化成图标。
+      */}
       <div className="sidebar-foot">
-        <div className={`vault-state ${vault?.state ?? 'uninitialized'}`}>
+        <div
+          className={`vault-state ${vault?.state ?? 'uninitialized'}`}
+          title={collapsed ? `${label.text} · ${label.detail}` : undefined}
+        >
           <span className="state-dot" />
-          {label.text}
+          <span className="vault-state-text">{label.text}</span>
         </div>
-        <div>{label.detail}</div>
+        <div className="vault-detail">{label.detail}</div>
         {label.action && (
-          <button className="vault-action" onClick={onVaultAction} disabled={vaultBusy}>
-            {vaultBusy ? '处理中…' : label.action}
+          <button
+            className="vault-action"
+            onClick={onVaultAction}
+            disabled={vaultBusy}
+            title={collapsed ? label.action : undefined}
+            aria-label={collapsed ? label.action : undefined}
+          >
+            {collapsed ? (
+              vault?.state === 'unlocked' ? (
+                <IconLock />
+              ) : (
+                <IconUnlock />
+              )
+            ) : vaultBusy ? (
+              '处理中…'
+            ) : (
+              label.action
+            )}
           </button>
         )}
       </div>

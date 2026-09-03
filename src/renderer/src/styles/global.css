@@ -69,12 +69,24 @@ body {
 button, input, select { font: inherit; }
 button { cursor: pointer; }
 
+/*
+ * 侧栏宽度走自定义属性，不要在别处再写死一遍 grid-template-columns。
+ *
+ * 🔴 为什么收起态用**属性选择器**而不是类名：
+ * 下面 1100px 的断点也要改侧栏宽度。如果两边都直接声明
+ * `grid-template-columns`，那就是同优先级 (0,1,0) 对 (0,1,0)，谁写在后面
+ * 谁赢 —— 于是「收起」在窄窗口下会被断点悄悄撑回 220px。
+ * `.app-shell[data-sidebar='collapsed']` 是 (0,2,0)，无论顺序都赢，
+ * 而断点只负责改变量。改这里之前先确认这条优先级关系还成立。
+ */
 .app-shell {
+  --sidebar-w: 256px;
   height: 100dvh;
   overflow: hidden;
   display: grid;
-  grid-template-columns: 256px minmax(0, 1fr);
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
 }
+.app-shell[data-sidebar='collapsed'] { --sidebar-w: 64px; }
 
 /* --- 侧栏 ------------------------------------------------------------- */
 .sidebar {
@@ -86,6 +98,12 @@ button { cursor: pointer; }
   padding: 24px 16px 18px;
   /* 项目多到装不下时侧栏自己滚，不把外壳撑破。 */
   overflow-y: auto;
+  /*
+   * 横向永远不滚。侧栏是一列固定宽度的东西，出现横向滚动条一定是算错了宽度，
+   * 而不是用户需要横着看 —— 收起态第一版就因为 border-right 那 1px 多出了
+   * 一条横向滚动条。这里兜住，别再让同一类问题浮到界面上。
+   */
+  overflow-x: hidden;
   min-height: 0;
 }
 .brand { display: flex; align-items: center; gap: 11px; padding: 0 10px 26px; }
@@ -196,6 +214,88 @@ button { cursor: pointer; }
 }
 .vault-action:hover:not(:disabled) { border-color: var(--ink); background: white; }
 .vault-action:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* 收起/展开按钮。挤在品牌行右侧，收起后居中。 */
+.sidebar-toggle {
+  flex: 0 0 auto;
+  margin-left: auto;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #9a9e98;
+  line-height: 0;
+  transition: 0.18s ease;
+}
+.sidebar-toggle:hover { color: var(--ink); background: #e6e7e3; }
+
+/*
+ * --- 侧栏收起态 ---------------------------------------------------------
+ *
+ * 只在 ≥721px 生效。≤720px 那个断点把侧栏整个改成了横向条并且已经
+ * display:none 掉了三个区块，两套规则叠在一起只会打架。
+ * （注：window.ts 的 minWidth 是 940，720px 实际只有缩放才够得到。）
+ */
+@media (min-width: 721px) {
+  /*
+   * padding 是 11 不是 12：轨道 64px 里有 1px 是 border-right，内容区只剩 63。
+   * 11×2 + 40（按钮宽）= 62 ≤ 63。用 12 的话正好差 1px，会顶出一条横向滚动条。
+   */
+  .app-shell[data-sidebar='collapsed'] .sidebar { padding-inline: 11px; align-items: center; }
+  .app-shell[data-sidebar='collapsed'] .brand { justify-content: center; padding: 0 0 20px; gap: 0; }
+  .app-shell[data-sidebar='collapsed'] .brand-text,
+  .app-shell[data-sidebar='collapsed'] .nav-label,
+  .app-shell[data-sidebar='collapsed'] .nav-text,
+  .app-shell[data-sidebar='collapsed'] .project-name,
+  .app-shell[data-sidebar='collapsed'] .project-path,
+  .app-shell[data-sidebar='collapsed'] .project-empty,
+  .app-shell[data-sidebar='collapsed'] .vault-state-text,
+  .app-shell[data-sidebar='collapsed'] .vault-detail {
+    display: none;
+  }
+
+  /*
+   * 收起时切换按钮从品牌行里挪出来，单独占一行居中 ——
+   * 40px 的行里既要放 logo 又要放按钮是塞不下的。
+   */
+  .app-shell[data-sidebar='collapsed'] .sidebar-toggle {
+    position: absolute;
+    left: 50%;
+    bottom: 12px;
+    margin-left: -13px;
+  }
+  .app-shell[data-sidebar='collapsed'] .sidebar { position: relative; padding-bottom: 46px; }
+
+  /* 导航和项目都退化成 40px 见方、图标居中的方块。 */
+  .app-shell[data-sidebar='collapsed'] .nav button,
+  .app-shell[data-sidebar='collapsed'] .project {
+    justify-content: center;
+    gap: 0;
+    padding: 11px 0;
+    width: 40px;
+  }
+  .app-shell[data-sidebar='collapsed'] .project-list { justify-items: center; }
+
+  .app-shell[data-sidebar='collapsed'] .sidebar-foot {
+    padding: 14px 0 0;
+    display: grid;
+    justify-items: center;
+    gap: 8px;
+  }
+  .app-shell[data-sidebar='collapsed'] .vault-action {
+    width: 34px;
+    height: 30px;
+    display: grid;
+    place-items: center;
+    margin-top: 0;
+    padding: 0;
+    line-height: 0;
+  }
+}
 
 /* --- 主区 ------------------------------------------------------------- */
 .main {
@@ -741,7 +841,8 @@ kbd {
 }
 
 @media (max-width: 1100px) {
-  .app-shell { grid-template-columns: 220px minmax(0, 1fr); }
+  /* 只改变量。直接改 grid-template-columns 会和收起态抢优先级，见文件开头。 */
+  .app-shell { --sidebar-w: 220px; }
   .main { padding-inline: 24px; }
   .workspace-grid { grid-template-columns: 1fr; }
   .side-stack { grid-template-columns: repeat(2, minmax(0, 1fr)); }
