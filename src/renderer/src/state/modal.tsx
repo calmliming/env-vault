@@ -9,6 +9,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
+import { IconX } from '../components/icons'
 
 export interface ModalRenderContext {
   close(): void
@@ -67,7 +68,7 @@ export function ModalProvider({ children }: { children: ReactNode }): ReactNode 
                 <h2 id="modal-title">{descriptor.title}</h2>
               </div>
               <button className="modal-close" onClick={closeModal} aria-label="关闭弹窗">
-                ×
+                <IconX />
               </button>
             </div>
             <div className="modal-body" ref={bodyRef}>

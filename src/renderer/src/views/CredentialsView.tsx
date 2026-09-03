@@ -1,6 +1,13 @@
 import { Fragment, useCallback, useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import { bridge } from '../lib/api'
+import {
+  IconChevronDown,
+  IconChevronUp,
+  IconCopy,
+  IconEye,
+  IconEyeOff
+} from '../components/icons'
 import type { CredentialStore } from '../hooks/useCredentials'
 import type { CredentialBindingView, CredentialSummary } from '@shared/ipc'
 
@@ -260,14 +267,16 @@ export function CredentialsView({
                           <span className={plain ? 'value' : 'value masked'}>
                             {plain ?? `••••${credential.lastFour || '••••'}`}
                           </span>
+                          {/* 图标语义与配置总览保持一致：睁眼=点了能看见，闭眼=点了会藏起来。 */}
                           <button
                             className="mini-btn"
                             data-action="reveal-credential"
-                            title="显示或隐藏"
-                            aria-label={`显示或隐藏 ${credential.credentialName} 的 Key`}
+                            title={plain ? '隐藏 Key' : '显示 Key'}
+                            aria-label={`${plain ? '隐藏' : '显示'} ${credential.credentialName} 的 Key`}
+                            aria-pressed={Boolean(plain)}
                             onClick={() => void toggleReveal(credential)}
                           >
-                            ◉
+                            {plain ? <IconEyeOff /> : <IconEye />}
                           </button>
                           <button
                             className="mini-btn"
@@ -276,7 +285,7 @@ export function CredentialsView({
                             aria-label={`复制 ${credential.credentialName} 的 Key`}
                             onClick={() => void copyKey(credential)}
                           >
-                            □
+                            <IconCopy />
                           </button>
                         </div>
                         <div className="credential-fingerprint" title="同一把 Key 的指纹相同">
@@ -301,7 +310,8 @@ export function CredentialsView({
                           data-action="toggle-bindings"
                           onClick={() => setExpanded(isOpen ? null : credential.id)}
                         >
-                          {credential.bindingCount} 处{isOpen ? ' ▴' : ' ▾'}
+                          {credential.bindingCount} 处
+                          {isOpen ? <IconChevronUp size={12} /> : <IconChevronDown size={12} />}
                         </button>
                       </td>
                       <td>

@@ -89,38 +89,30 @@ button { cursor: pointer; }
   min-height: 0;
 }
 .brand { display: flex; align-items: center; gap: 11px; padding: 0 10px 26px; }
+/*
+ * 品牌标记，和打包用的应用图标是同一个东西（scripts/make-icon.mjs）。
+ *
+ * 早先这里用 ::before/::after 画的是「文档 + 菱形 + 点」，和任务栏上那把
+ * 「=」挂锁毫无关系 —— 同一个应用两个标记，走到哪都对不上号。现在瓷砖的
+ * 圆角/底色/标记色全部照搬生成脚本的令牌，形状交给 LogoMark 那段 SVG。
+ *
+ *   CORNER 0.185 × 34px ≈ 6px    BASE #4a6357 → BASE_TOP #5d7a6c（顶部提亮）
+ *   标记色 CANVAS #f6f6f3
+ *
+ * 深底是有意的：浅色和深色任务栏上都立得住，理由写在生成脚本的注释里。
+ */
 .brand-mark {
-  position: relative;
+  flex: 0 0 auto;
   width: 34px;
   height: 34px;
-  border: 1px solid #343a35;
-  border-radius: 9px;
+  border-radius: 6px;
   display: grid;
   place-items: center;
   overflow: hidden;
-  background: #ffffff;
+  background: linear-gradient(180deg, #5d7a6c 0%, #4a6357 100%);
+  color: var(--canvas);
 }
-.brand-mark::before {
-  content: '';
-  position: absolute;
-  inset: 6px;
-  border: 1.5px solid var(--green);
-  border-radius: 4px;
-  clip-path: polygon(0 0, 100% 0, 100% 72%, 72% 100%, 0 100%);
-}
-.brand-mark::after {
-  content: '';
-  position: absolute;
-  width: 8px;
-  height: 8px;
-  border: 1.5px solid var(--ink);
-  border-radius: 2px;
-  transform: rotate(45deg);
-  top: 11px;
-  left: 11px;
-  background: #ffffff;
-}
-.brand-mark-core { position: relative; z-index: 1; width: 3px; height: 3px; border-radius: 50%; background: var(--ink); }
+.brand-mark-core { display: block; }
 .brand-name { font-weight: 700; letter-spacing: 0; }
 .brand-meta {
   display: block;
@@ -154,7 +146,7 @@ button { cursor: pointer; }
 }
 .nav button:hover { background: #e6e7e3; color: var(--ink); }
 .nav button.active { background: #e1e4e0; color: var(--ink); }
-.nav-icon { width: 16px; text-align: center; font: 14px var(--mono); opacity: 0.85; }
+.nav-icon { flex: 0 0 auto; display: inline-grid; place-items: center; width: 16px; height: 16px; line-height: 0; opacity: 0.85; }
 .project-list { display: grid; gap: 3px; margin-top: 5px; }
 /* 项目现在是按钮（可切换），要把浏览器默认按钮样式抹掉才能和原来的 div 一致。 */
 .project {
@@ -256,7 +248,7 @@ button { cursor: pointer; }
   border-radius: 6px;
   transition: 0.18s ease;
 }
-.icon-btn { width: 33px; height: 33px; display: grid; place-items: center; font: 16px var(--mono); }
+.icon-btn { width: 33px; height: 33px; display: grid; place-items: center; line-height: 0; }
 .outline-btn { padding: 8px 12px; font-size: 12px; }
 .primary-btn { border-color: var(--ink); background: var(--ink); color: white; padding: 9px 14px; font-size: 12px; }
 /* 破坏性确认按钮。和 primary 长得不一样，是为了不让"下意识点右边那个"变成误删。 */
@@ -318,7 +310,7 @@ h1 { font-size: 35px; letter-spacing: 0; line-height: 1.05; margin: 8px 0 9px; }
   border-radius: 5px;
   padding: 7px 9px;
 }
-.search span { font: 13px var(--mono); }
+.search span { display: inline-grid; place-items: center; line-height: 0; color: #9a9e98; }
 .search input { width: 100%; border: 0; outline: 0; background: transparent; color: var(--ink); font-size: 11px; }
 .search input::placeholder { color: #a1a49e; }
 .tool-note { color: var(--muted); font-size: 11px; }
@@ -342,17 +334,48 @@ h1 { font-size: 35px; letter-spacing: 0; line-height: 1.05; margin: 8px 0 9px; }
  * 而阶段 1 接入真实扫描后来源名只会更长（.env.test.local 等）。
  * 下面的 .source-tag 省略号是再长时的兜底。
  */
-.col-key { width: 27%; }
-.col-value { width: 30%; }
-.col-type { width: 13%; }
+/*
+ * 🔴 值列又匀宽了一次（30% → 35%，从 key 和 status 各借一点）。
+ *
+ * 换成 SVG 之后 `.mini-btn` 是固定的 22px 盒子，而值列最多要放五个按钮
+ * （显示/复制/编辑/弹窗编辑/删除）。按 gap 3px 算：5×22 + 4×3 = 122px。
+ * 表格是 table-layout: fixed，宽度不够时挤掉的不是按钮而是值本身 ——
+ * 值会被省略号吃到只剩两三个字符，整列就废了。改这几个数之前先把上面那道
+ * 算式重算一遍。
+ */
+.col-key { width: 24%; }
+.col-value { width: 34%; }
+.col-type { width: 12%; }
 .col-source { width: 18%; }
 .col-status { width: 12%; }
 .key-name { font: 12px var(--mono); color: #313631; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.value-cell { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.value-cell { display: flex; align-items: center; gap: 3px; min-width: 0; }
 .value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #666d66; font: 11px var(--mono); }
 .value.masked { letter-spacing: 0.12em; color: #888d87; }
-.mini-btn { flex: 0 0 auto; border: 0; background: transparent; color: #9a9e98; font: 13px var(--mono); padding: 2px; }
-.mini-btn:hover { color: var(--ink); }
+/*
+ * 🔴 图标换成 SVG 之后这里必须有确定的盒子。
+ *
+ * 原来是 `font: 13px var(--mono); padding: 2px` —— 尺寸完全由字形撑出来。
+ * SVG 不是字形，没有盒子就会塌成 0 高（或者被 line-height 顶出半行空白），
+ * 表现是「按钮还在、点得到，但看不见图标」。
+ * 一排五个按钮的总宽也是靠这个 22px 算出来的，见 .col-value 那边的注释。
+ */
+.mini-btn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #9a9e98;
+  line-height: 0;
+}
+.mini-btn svg { display: block; }
+.mini-btn:hover { color: var(--ink); background: #ecede9; }
 .mini-btn.danger:hover { color: #9c4a35; }
 /* 文件有外部改动时编辑/删除是禁用的，得看得出来点不动，而不是点了没反应。 */
 .mini-btn:disabled { opacity: 0.35; cursor: not-allowed; }
@@ -451,7 +474,8 @@ h1 { font-size: 35px; letter-spacing: 0; line-height: 1.05; margin: 8px 0 9px; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.status { display: inline-flex; align-items: center; gap: 5px; color: var(--green); font-size: 11px; }
+/* nowrap：这一列只有「已同步」「有差异」这类三字短语，断成两行纯属噪音。 */
+.status { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; color: var(--green); font-size: 11px; }
 .status-dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
 .status.warn { color: var(--orange); }
 .empty-row { padding: 26px 15px; color: var(--muted); font-size: 12px; text-align: center; }
@@ -547,6 +571,8 @@ h1 { font-size: 35px; letter-spacing: 0; line-height: 1.05; margin: 8px 0 9px; }
   text-decoration: underline;
   text-underline-offset: 3px;
 }
+/* 绑定数后面跟着一个展开箭头（SVG），下划线只该落在文字上，不该拖着图标走。 */
+.link-btn svg { vertical-align: -2px; margin-left: 2px; }
 .panel-empty { color: var(--muted); font-size: 11px; line-height: 1.65; margin: 0; padding: 4px 0; }
 
 /* 安全检查页的结论列表 */
@@ -631,7 +657,7 @@ h1 { font-size: 35px; letter-spacing: 0; line-height: 1.05; margin: 8px 0 9px; }
 }
 .modal-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding: 23px 24px 18px; border-bottom: 1px solid var(--line); }
 .modal-head h2 { margin: 6px 0 0; font-size: 22px; letter-spacing: 0; }
-.modal-close { width: 30px; height: 30px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); color: var(--muted); font: 18px var(--mono); }
+.modal-close { width: 30px; height: 30px; display: grid; place-items: center; line-height: 0; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); color: var(--muted); }
 .modal-close:hover { color: var(--ink); border-color: var(--ink); background: white; }
 .modal-body { padding: 21px 24px 24px; }
 .modal-copy { color: var(--muted); font-size: 12px; line-height: 1.6; margin: 0 0 18px; }

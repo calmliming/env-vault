@@ -1,6 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { bridge } from '../lib/api'
+import {
+  IconCheck,
+  IconCopy,
+  IconEye,
+  IconEyeOff,
+  IconPencil,
+  IconSearch,
+  IconTrash,
+  IconX
+} from '../components/icons'
 import type { Workspace } from '../hooks/useWorkspace'
 import type { ConfigEntryView, CredentialSuggestion, EnvFileView } from '@shared/ipc'
 
@@ -344,7 +354,7 @@ export function OverviewView({
 
           <div className="table-tools">
             <label className="search">
-              <span aria-hidden="true">⌕</span>
+              <IconSearch />
               <span className="sr-only">搜索变量</span>
               <input
                 placeholder="搜索变量名或来源"
@@ -452,7 +462,7 @@ export function OverviewView({
                               aria-label={`保存 ${entry.key}`}
                               disabled={saving || (blindWrite && editing.draft === '')}
                             >
-                              ✓
+                              <IconCheck />
                             </button>
                             <button
                               type="button"
@@ -463,7 +473,7 @@ export function OverviewView({
                               disabled={saving}
                               onClick={() => setEditing(null)}
                             >
-                              ✕
+                              <IconX />
                             </button>
                           </form>
                         ) : (
@@ -477,14 +487,20 @@ export function OverviewView({
                               {shown === '' ? <span className="value-empty">（空值）</span> : shown}
                             </span>
                             {entry.masked && (
+                              /*
+                                图标表达的是**点下去会发生什么**，不是当前状态 ——
+                                和密码框的通行约定一致：藏着的时候给睁眼（点了能看见），
+                                已经显示了就给闭眼（点了会藏起来）。
+                              */
                               <button
                                 className="mini-btn"
                                 data-action="reveal"
-                                title="显示或隐藏"
-                                aria-label={`显示或隐藏 ${entry.key}`}
+                                title={plain === undefined ? '显示值' : '隐藏值'}
+                                aria-label={`${plain === undefined ? '显示' : '隐藏'} ${entry.key} 的值`}
+                                aria-pressed={plain !== undefined}
                                 onClick={() => void toggleReveal(entry)}
                               >
-                                ◉
+                                {plain === undefined ? <IconEye /> : <IconEyeOff />}
                               </button>
                             )}
                             <button
@@ -494,7 +510,7 @@ export function OverviewView({
                               aria-label={`复制 ${entry.key}`}
                               onClick={() => void copyValue(entry)}
                             >
-                              □
+                              <IconCopy />
                             </button>
                             <button
                               className="mini-btn"
@@ -504,7 +520,7 @@ export function OverviewView({
                               disabled={editBlocked !== null}
                               onClick={() => beginEdit(entry)}
                             >
-                              ✎
+                              <IconPencil />
                             </button>
                             <button
                               className="mini-btn danger"
@@ -519,7 +535,7 @@ export function OverviewView({
                               disabled={fileBlocked !== null}
                               onClick={() => requestDelete(entry)}
                             >
-                              ✕
+                              <IconTrash />
                             </button>
                           </div>
                         )}

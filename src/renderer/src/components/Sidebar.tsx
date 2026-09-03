@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import type { ViewId } from '../views/registry'
 import { VIEWS } from '../views/registry'
+import { LogoMark } from './icons'
 import type { ProjectSummary, VaultStatus } from '@shared/ipc'
 
 interface SidebarProps {
@@ -30,9 +31,13 @@ export function Sidebar({
     <aside className="sidebar">
       <div className="brand">
         <div className="brand-mark" aria-label="EnvVault logo">
-          <span className="brand-mark-core" />
+          {/*
+            类名 `brand-mark-core` 保留在标记本身上。verify-ui 断言它恰好渲染
+            一次（「logo 受保护核心渲染一次」），换成 SVG 之后这个标记就是核心。
+          */}
+          <LogoMark className="brand-mark-core" size={22} />
         </div>
-        <div>
+        <div className="brand-text">
           <div className="brand-name">EnvVault</div>
           <span className="brand-meta">local workspace</span>
         </div>
@@ -47,10 +52,11 @@ export function Sidebar({
             aria-current={view.id === activeView ? 'page' : undefined}
             onClick={() => onSelectView(view.id)}
           >
-            <span className="nav-icon" aria-hidden="true">
-              {view.icon}
+            <span className="nav-icon">
+              <view.icon />
             </span>
-            {view.label}
+            {/* 🔴 标签必须包一层：收起态要把它藏掉，裸文本节点没有元素可选。 */}
+            <span className="nav-text">{view.label}</span>
           </button>
         ))}
       </nav>
