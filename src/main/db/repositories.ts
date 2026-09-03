@@ -74,7 +74,7 @@ export function previewProject(rootPath: string): ScanPreview {
     rootPath: scan.rootPath,
     gitRoot: scan.gitRoot,
     suggestedName: basename(scan.rootPath) || scan.rootPath,
-    truncated: scan.truncated,
+    truncatedBy: scan.truncatedBy,
     totalEntries: scan.files.reduce((sum, file) => sum + file.entries.length, 0),
     alreadyImported: existing !== undefined,
     files: scan.files.map((file) => ({
@@ -112,7 +112,7 @@ export function discoverProjectsPreview(rootPath: string): DiscoveryPreview {
         alreadyImported: preview.alreadyImported,
         files: preview.files,
         totalEntries: preview.totalEntries,
-        truncated: preview.truncated
+        truncatedBy: preview.truncatedBy
       }
     })
   }

@@ -217,7 +217,7 @@ export async function scanSecurity(
       unknown: files.filter((file) => file.level === 'unknown').length,
       ok: files.filter((file) => file.level === 'ok').length
     },
-    truncated: scan.truncated,
+    truncatedBy: scan.truncatedBy,
     scannedAt: Date.now()
   }
 }

@@ -136,9 +136,14 @@ export function SecurityView({
             </p>
           )}
 
-          {report.truncated && (
+          {report.truncatedBy === 'files' && (
             <p className="risk-notice">
-              目录太大，扫描触到了上限，可能还有没列出来的 .env* 文件。
+              .env* 文件数达到上限，扫描提前停止了 —— 还有文件没检查到。
+            </p>
+          )}
+          {report.truncatedBy === 'depth' && (
+            <p className="risk-notice">
+              有目录层数太深，扫描没有进去 —— 那里面如果有 .env*，这次没检查到。
             </p>
           )}
 

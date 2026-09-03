@@ -247,8 +247,21 @@ export function ProjectModal({ close, showToast, onImported }: ProjectModalProps
                     这个目录不在任何 Git 仓库里 —— 可以纳管，但安全检查里的跟踪状态会显示「查不了」。
                   </p>
                 )}
-                {project.truncated && (
-                  <p className="modal-note">这个项目下的文件很多，扫描在达到上限后停止了。</p>
+                {/*
+                  分开措辞：'files' 是确定漏了，'depth' 只是可能漏了。
+                  以前两种都说「文件很多」，而深目录才是绝大多数情况 ——
+                  于是正常的 monorepo 每次纳管都吃一条错误归因的警告。
+                */}
+                {project.truncatedBy === 'files' && (
+                  <p className="modal-note">
+                    .env* 文件数达到上限，扫描提前停止了 —— 还有文件没列出来。
+                  </p>
+                )}
+                {project.truncatedBy === 'depth' && (
+                  <p className="modal-note">
+                    有目录层数太深，扫描没有进去。如果那里面有 .env*，这次不会收进来；
+                    深目录本身很常见（比如路由目录），通常不影响。
+                  </p>
                 )}
 
                 {single && (

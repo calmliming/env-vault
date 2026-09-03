@@ -57,6 +57,21 @@ export interface ScanOptions {
   maxFiles?: number
 }
 
+/**
+ * 遍历没走完的原因。🔴 两者的**确定性完全不同**，界面必须分开措辞：
+ *
+ *   'files' —— 收满了 maxFiles。确实有 `.env*` 没被收进来，这是事实。
+ *   'depth' —— 有目录深过 maxDepth 没进去。**不代表一定漏了东西** ——
+ *              深的那一支里可能一个 `.env` 都没有。Next.js App Router 的
+ *              `apps/web/src/app/api/.../[id]/attachments` 轻松 11 层，
+ *              里面不可能有配置文件，但足够让这个标记亮起来。
+ *
+ * 早先这里是一个布尔 `truncated`，两种情况挤在一起，界面只好统一说
+ * 「文件很多」—— 对 'depth' 那一路来说归因是错的，而 'depth' 恰恰是
+ * 绝大多数情况。所以这里是 union 不是 boolean。
+ */
+export type ScanTruncation = 'depth' | 'files'
+
 export interface ScannedEntry {
   key: string
   value: string
@@ -98,8 +113,11 @@ export interface ScanResult {
    * 让用户知道那几个仓库需要单独纳管，而不是以为扫漏了。
    */
   nestedRepos: string[]
-  /** 是否因为触到 maxFiles/maxDepth 上限而没扫全。 */
-  truncated: boolean
+  /**
+   * 遍历没走完的原因，null 表示扫全了。
+   * 两个值的含义差别很大，见 `ScanTruncation`。
+   */
+  truncatedBy: ScanTruncation | null
   scannedAt: number
 }
 
@@ -119,21 +137,33 @@ export function findGitRoot(startDir: string): string | null {
 }
 
 export function scanProject(rootPath: string, options: ScanOptions = {}): ScanResult {
-  const maxDepth = options.maxDepth ?? 6
+  /*
+   * 🔴 12 不是随手拍的：6 对真实项目根本不够用。
+   *
+   * monorepo + Next.js App Router 光路由本身就能到 10 层以上，例如
+   * `apps/web/src/app/api/background/support/mail/received/[id]/attachments`
+   * —— 而 `walk` 只要有**任何一支**深过上限就会打上截断标记，于是这类项目
+   * 每次纳管都会看到一条其实什么也没漏的警告。警告狼来了喊多了就没人看了。
+   *
+   * 真正防「指着 C:\ 扫穿整块盘」的是 maxFiles 和 SKIP_DIRECTORIES，不是这个。
+   */
+  const maxDepth = options.maxDepth ?? 12
   const maxFiles = options.maxFiles ?? 200
   const root = resolve(rootPath)
 
   const files: ScannedFile[] = []
   const nestedRepos: string[] = []
-  let truncated = false
+  // 分开记：'files' 是确定漏了，'depth' 只是可能漏了，不能合成一个布尔。
+  let hitFileLimit = false
+  let hitDepthLimit = false
 
   const walk = (dir: string, depth: number): void => {
     if (files.length >= maxFiles) {
-      truncated = true
+      hitFileLimit = true
       return
     }
     if (depth > maxDepth) {
-      truncated = true
+      hitDepthLimit = true
       return
     }
 
@@ -151,7 +181,7 @@ export function scanProject(rootPath: string, options: ScanOptions = {}): ScanRe
       const identity = identifyEnvFile(dirent.name)
       if (!identity) continue
       if (files.length >= maxFiles) {
-        truncated = true
+        hitFileLimit = true
         return
       }
       files.push(readEnvFile(join(dir, dirent.name), root, dirent.name, identity))
@@ -184,7 +214,8 @@ export function scanProject(rootPath: string, options: ScanOptions = {}): ScanRe
     gitRoot: findGitRoot(root),
     files,
     nestedRepos,
-    truncated,
+    // 两个都撞到时报 'files'：它是确定漏了的那个，比 'depth' 更该被说出来。
+    truncatedBy: hitFileLimit ? 'files' : hitDepthLimit ? 'depth' : null,
     scannedAt: Date.now()
   }
 }

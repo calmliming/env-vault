@@ -39,7 +39,7 @@ test('扫描发现所有 .env* 文件，跳过依赖与构建目录', () => {
       '.env.local',
       'apps/web/.env.production'
     ])
-    assert.equal(result.truncated, false)
+    assert.equal(result.truncatedBy, null)
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
@@ -106,15 +106,47 @@ test('文件不存在时哈希返回 null 而不是抛异常', () => {
   assert.equal(currentFileHash(join(tmpdir(), 'definitely-not-here-9f3a', '.env')), null)
 })
 
-test('深度上限生效并标记 truncated', () => {
+test('深度上限生效并标记 truncatedBy: depth', () => {
   const root = mkdtempSync(join(tmpdir(), 'envvault-depth-'))
   try {
     mkdirSync(join(root, 'a', 'b', 'c'), { recursive: true })
     writeFileSync(join(root, 'a', 'b', 'c', '.env'), 'DEEP=1\n')
 
     assert.equal(scanProject(root, { maxDepth: 1 }).files.length, 0)
-    assert.equal(scanProject(root, { maxDepth: 1 }).truncated, true)
+    assert.equal(scanProject(root, { maxDepth: 1 }).truncatedBy, 'depth')
     assert.equal(scanProject(root, { maxDepth: 3 }).files.length, 1)
+    assert.equal(scanProject(root, { maxDepth: 3 }).truncatedBy, null)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+/*
+ * 回归：这一条是这次改动的起因。
+ *
+ * 真实项目（monorepo + Next.js App Router）的路由目录能到 11 层，里面一个
+ * `.env` 都没有，却让扫描报「这个项目下的文件很多」。归因错了，而且天天报。
+ * 默认深度提到 12 之后，这种形状必须安静。
+ */
+test('深但没有 .env 的目录：默认参数下不报截断', () => {
+  const root = mkdtempSync(join(tmpdir(), 'envvault-deep-empty-'))
+  try {
+    writeFileSync(join(root, '.env.example'), 'A=1\n')
+    mkdirSync(join(root, 'apps', 'web', '.git'), { recursive: true })
+    rmSync(join(root, 'apps', 'web', '.git'), { recursive: true, force: true })
+    writeFileSync(join(root, '.env'), 'B=1\n')
+
+    // apps/web/src/app/api/background/support/mail/received/[id]/attachments
+    const deep = join(
+      root, 'apps', 'web', 'src', 'app', 'api',
+      'background', 'support', 'mail', 'received', '[id]', 'attachments'
+    )
+    mkdirSync(deep, { recursive: true })
+    writeFileSync(join(deep, 'route.ts'), 'export const GET = () => null\n')
+
+    const result = scanProject(root)
+    assert.equal(result.truncatedBy, null, '深目录里没有 .env，不该报截断')
+    assert.equal(result.files.length, 2)
   } finally {
     rmSync(root, { recursive: true, force: true })
   }
@@ -130,7 +162,7 @@ test('文件数上限生效，浅层文件优先保留', () => {
     const capped = scanProject(root, { maxFiles: 1 })
     assert.equal(capped.files.length, 1)
     assert.equal(capped.files[0]?.relativePath, '.env')
-    assert.equal(capped.truncated, true)
+    assert.equal(capped.truncatedBy, 'files')
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

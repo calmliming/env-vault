@@ -168,6 +168,19 @@ export interface ScanPreviewFile {
   error: string | null
 }
 
+/**
+ * 目录遍历没走完的原因。🔴 两者的确定性不同，界面必须分开措辞：
+ *
+ *   'files' —— 收满了文件数上限，**确实**有 `.env*` 没收进来。
+ *   'depth' —— 有目录深过层数上限没进去，**不一定**漏了东西：
+ *              深的那一支里可能一个 `.env` 都没有（Next.js 路由目录就是典型）。
+ *
+ * ⚠️ 与 `main/env/scan.ts` 里同名的 union 必须保持一致。那边不能 import
+ * `@shared/*` 别名（要能被 `node --test` 直接跑，见 discover.ts 顶部），
+ * 所以只能各写一份，改动时两处一起改。
+ */
+export type ScanTruncation = 'depth' | 'files'
+
 /** 只读扫描的结果。对应 §6.1 步骤 3「展示发现的文件和变量数量，不立即修改文件」。 */
 export interface ScanPreview {
   rootPath: string
@@ -175,8 +188,8 @@ export interface ScanPreview {
   /** 按目录名给出的项目名建议，用户可改。 */
   suggestedName: string
   files: ScanPreviewFile[]
-  /** 触到深度或数量上限，没扫全。 */
-  truncated: boolean
+  /** 遍历没走完的原因，null 表示扫全了。 */
+  truncatedBy: ScanTruncation | null
   totalEntries: number
   /** 这个路径已经被纳管过了。 */
   alreadyImported: boolean
@@ -195,8 +208,8 @@ export interface DiscoveredProjectPreview {
   alreadyImported: boolean
   files: ScanPreviewFile[]
   totalEntries: number
-  /** 这个仓库自己的扫描触到了上限。 */
-  truncated: boolean
+  /** 这个仓库自己的扫描没走完的原因，null 表示扫全了。 */
+  truncatedBy: ScanTruncation | null
 }
 
 export interface DiscoveryPreview {
@@ -647,8 +660,8 @@ export interface SecurityReport {
   gitUnavailable: string | null
   files: FileRisk[]
   summary: { critical: number; warning: number; unknown: number; ok: number }
-  /** 目录遍历触到深度或数量上限，没扫全。 */
-  truncated: boolean
+  /** 目录遍历没走完的原因，null 表示扫全了。 */
+  truncatedBy: ScanTruncation | null
   scannedAt: number
 }
 
