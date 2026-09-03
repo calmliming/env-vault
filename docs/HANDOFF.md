@@ -91,6 +91,7 @@ pnpm build        # typecheck + 三端打包到 out/
 pnpm verify:core  # 真实 Electron 运行时里验数据库、Vault、扫描、导入、差异、写回、凭据
 pnpm verify:ui    # 播种真数据 → 启动真界面 → CDP 断言 → 截图到 out/
 pnpm package      # electron-builder 出安装器 + 便携版到 release/。见 RELEASE.md
+node scripts/make-icon.mjs   # 重新生成 build/icon.ico（改设计改脚本，别改二进制）
 ```
 
 ## 3. 🔴 环境上的坑（这台 Windows 机器）

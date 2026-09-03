@@ -74,6 +74,24 @@ pnpm run package
 同时要把 `electron-builder.yml` 里那行 `signAndEditExecutable: false` 删掉 ——
 它是环境妥协，不是设计选择，见下一节。
 
+### ⚠️ 图标：安装器已经有了，应用 exe 还没有
+
+`build/icon.ico` 由 `scripts/make-icon.mjs` 生成（改设计改那个脚本，别改二进制）。
+当前状态是**可验证的**，把两个 exe 里嵌的图标抠出来看过：
+
+| 产物 | 图标 |
+| --- | --- |
+| `EnvVault Setup <版本>.exe` | ✅ 已是新图标 —— NSIS 自己编译图标，不经过 rcedit |
+| `EnvVault.exe` | ❌ 仍是 Electron 默认的原子图案 |
+
+差别的原因就是下面这一节：写 exe 图标要用 rcedit，而 rcedit 拿不到。
+开发者模式生效后重新打包，应用 exe 才会拿到图标和版本信息。
+
+复核用的对照表：`node scripts/make-icon.mjs` 会顺带生成
+`out/icon-preview/sheet.png` —— 小尺寸按整数倍放大（看得见每个像素），
+并在**浅色和深色两种任务栏底色**上各铺一遍。
+只看 256 那张判断不了图标好坏，天天见到的是 16~32px。
+
 ### ⚠️ `signAndEditExecutable: false` 是环境妥协
 
 electron-builder 会下载并解压一个 `winCodeSign` 工具包，里面含 macOS 的
