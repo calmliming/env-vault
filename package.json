@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "本地优先的项目配置与模型凭据管理工具",
+  "author": "Calm",
   "main": "./out/main/index.js",
   "type": "module",
   "packageManager": "pnpm@11.22.0",

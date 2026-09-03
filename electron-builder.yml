@@ -39,15 +39,16 @@ win:
   # 🔴 没有 certificateFile / certificatePassword —— 这是有意的，见文件顶部。
   # 有证书时从环境变量传入（CSC_LINK / CSC_KEY_PASSWORD），不要写进这个文件。
   #
-  # ⚠️ signAndEditExecutable: false 是**这台机器的环境妥协**，不是设计选择。
-  # electron-builder 会下载并解压一个 winCodeSign 工具包，里面含 macOS 的
-  # dylib 符号链接；Windows 上创建符号链接需要管理员权限或开发者模式，
-  # 这台机器两样都没有，于是解压失败、整个打包中止。
+  # 📌 这里曾经有一行 `signAndEditExecutable: false`，是环境妥协，不是设计选择：
+  # electron-builder 解压 winCodeSign 工具包时要创建 macOS dylib 的符号链接，
+  # 而 Windows 上建符号链接需要管理员权限或开发者模式，当时两样都没有，
+  # 解压失败会让整个打包中止。代价是 rcedit 也在同一条路径上，
+  # exe 的图标和版本信息写不进去。
   #
-  # 关掉它就不再走那条路，代价是 exe 的图标和版本信息不会被写入
-  # （rcedit 也在同一条路径上）。开了 Windows 开发者模式之后应该把这行删掉。
-  # 详见 HANDOFF §3 与 RELEASE.md。
-  signAndEditExecutable: false
+  # 这台机器现在开了开发者模式，那行已删除。
+  # 如果将来打包又死在 winCodeSign 解压上，先确认开发者模式还开着
+  # （设置 → 系统 → 开发者选项），不要直接把那行加回来 —— 加回来图标就又没了。
+  # 详见 RELEASE.md。
 
 nsis:
   oneClick: false
