@@ -14,7 +14,9 @@
     "test": "node --test \"src/main/**/*.test.ts\"",
     "verify:core": "esbuild scripts/verify-core.ts --bundle --platform=node --format=esm --target=node22 --outfile=out/verify/index.mjs --external:electron --alias:@shared=./src/shared && electron out/verify/index.mjs",
     "verify:ui": "node scripts/verify-ui.mjs",
-    "verify": "pnpm run test && pnpm run build && pnpm run verify:core && pnpm run verify:ui"
+    "verify": "pnpm run test && pnpm run build && pnpm run verify:core && pnpm run verify:ui",
+    "package": "pnpm run build && electron-builder --config electron-builder.yml",
+    "package:dir": "pnpm run build && electron-builder --config electron-builder.yml --dir"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",

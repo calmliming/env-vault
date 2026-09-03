@@ -107,8 +107,13 @@ cmd.exe 会**重新解析**所有参数 —— `node -e "if (a) …"` 里的引�
 - **1Password / Bitwarden / Doppler 适配**。它们需要机器上装有各自的 CLI，
   验收里只能全程用假的 —— 而一个只验过假实现的集成等于没验。单独再议。
 - **把 `envvault` 装进 PATH** 是发布时的事（electron-builder 的安装器）。
-  现在打包后是 `EnvVault.exe run -- <命令>`，开发期是
-  `electron . run --project fixture --env local -- node -v`。
+  开发期是 `electron . run --project fixture --env local -- node -v`。
+
+  > 更新（阶段 7）：打包做了，NSIS 安装器会写 PATH。当时这里写的
+  > 「打包后是 `EnvVault.exe run -- <命令>`」是一句**没验证过的推断** ——
+  > 那会儿 electron-builder 连配置文件都还没有。阶段 7 真打了一次，
+  > 产物确实叫 `EnvVault.exe`，CLI 也确实跑得起来，这句话是对的。
+  > ⚠️ 但**安装器本身没有被运行过**，PATH 到底写没写进去仍未验证，见 RELEASE.md。
 
 ## 8. 验收
 

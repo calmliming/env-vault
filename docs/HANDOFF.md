@@ -57,7 +57,7 @@ Electron + React + TypeScript，数据全部留在本机，敏感值加密存储
 
 ```powershell
 pnpm dev       # 开发模式，Vite HMR + Electron
-pnpm verify    # 全套：234 单元测试 + 221 核心断言 + 129 界面断言，约 2 分钟
+pnpm verify    # 全套：234 单元测试 + 221 核心断言 + 131 界面断言，约 2 分钟
                # 单元测试是 233 通过 + 1 跳过：write.test.ts 的 POSIX 权限位，
                # Windows 上恒跳，skip 里写了理由。这是目前唯一一条跳过，多出来就要查。
 
@@ -90,11 +90,12 @@ pnpm test         # 只跑单元测试（node --test 原生跑 .ts，无需构�
 pnpm build        # typecheck + 三端打包到 out/
 pnpm verify:core  # 真实 Electron 运行时里验数据库、Vault、扫描、导入、差异、写回、凭据
 pnpm verify:ui    # 播种真数据 → 启动真界面 → CDP 断言 → 截图到 out/
+pnpm package      # electron-builder 出安装器 + 便携版到 release/。见 RELEASE.md
 ```
 
 ## 3. 🔴 环境上的坑（这台 Windows 机器）
 
-这四条不是代码问题，但会让你卡住半小时以上：
+这五条不是代码问题，但会让你卡住半小时以上：
 
 1. **没有 Visual Studio 构建工具**，任何要 node-gyp 编译的原生包都装不上。
    所以 SQLite 用的是 Electron 自带的 `node:sqlite` 而不是计划书写的 `better-sqlite3`
@@ -108,6 +109,14 @@ pnpm verify:ui    # 播种真数据 → 启动真界面 → CDP 断言 → 截�
    ```
 4. **pnpm 11 默认拦 install 脚本**，放行配置在 `pnpm-workspace.yaml` 的 `allowBuilds:`
    （不是旧版的 `pnpm.onlyBuiltDependencies`，写在 package.json 里会被忽略）。
+5. **打包会因为符号链接失败**。electron-builder 要解压的 `winCodeSign` 工具包里
+   含 macOS 的 dylib 符号链接，Windows 上建符号链接需要管理员权限或开发者模式，
+   这台机器两样都没有 —— 表现是解压报「客户端没有所需的特权」、整个打包中止。
+   预先手动解压**不管用**（它每次解压到新的随机目录）。
+   现在靠 `electron-builder.yml` 里的 `signAndEditExecutable: false` 绕开，
+   代价是 exe 的图标和版本信息写不进去。**开了开发者模式就该把那行删掉。**
+   另外 `pnpm audit` 也要显式指定 `--registry=https://registry.npmjs.org/`，
+   npmmirror 没有 audit 端点。
 
 窗口起不来、终端卡在 `start electron app...` 时，先看 `node_modules/electron/dist/` 是不是空的。
 

@@ -1350,6 +1350,46 @@ async function runChecks() {
   check('滚动发生在内容区内部', scroll.paneScrolls === true && scroll.paneScrolled === true, `可滚=${scroll.paneScrolls} 已滚动=${scroll.paneScrolled}`)
   check('滚动时顶栏保持不动', scroll.topbarMoved === false, `位移=${scroll.topbarMoved}`)
 
+  // --- 窄屏：规格 §10「不同分辨率和窄屏布局检查」（阶段 7）------------------
+  //
+  // 压到 BrowserWindow 的 minWidth。这个尺寸下**横向**不该出现文档级滚动条 ——
+  // 出现了就意味着有一处固定宽度顶破了布局，而横向滚动在桌面应用里
+  // 几乎总是布局出错的信号，不是设计。
+  await send('Emulation.setDeviceMetricsOverride', {
+    width: 900,
+    height: 700,
+    deviceScaleFactor: 1,
+    mobile: false
+  })
+
+  const narrow = await evaluate(`(async () => {
+    const wait = (ms) => new Promise(r => setTimeout(r, ms));
+    const views = ['配置总览', '模型凭据', '安全检查', '操作记录', '设置'];
+    const offenders = [];
+    for (const label of views) {
+      [...document.querySelectorAll('.nav button')].find(b => b.textContent.includes(label))?.click();
+      await wait(250);
+      if (document.documentElement.scrollWidth > document.documentElement.clientWidth + 1) {
+        offenders.push(label + '(' + document.documentElement.scrollWidth + '>' +
+          document.documentElement.clientWidth + ')');
+      }
+    }
+    // 🔴 巡检完必须回到「配置总览」：后面的段落（处理差异、生成模板）
+    // 都假定停在这一页。第一版停在「设置」，后面直接报 null.options。
+    [...document.querySelectorAll('.nav button')].find(b => b.textContent.includes('配置总览'))?.click();
+    await wait(300);
+    return { offenders, checked: views.length, backOnOverview: !!document.querySelector('.head-actions') };
+  })()`, true)
+
+  check(
+    '🔴 窄屏（900px）下五个页面都不出现横向滚动条',
+    narrow.offenders.length === 0,
+    narrow.offenders.length === 0
+      ? `${narrow.checked} 个页面都没有横向溢出`
+      : `横向溢出：${narrow.offenders.join('、')}`
+  )
+  check('巡检后回到了配置总览（后面的段落依赖这一点）', narrow.backOnOverview === true, `回到总览=${narrow.backOnOverview}`)
+
   await send('Emulation.clearDeviceMetricsOverride')
 
   // --- 弹窗 -----------------------------------------------------------------
