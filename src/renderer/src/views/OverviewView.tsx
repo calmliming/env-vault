@@ -4,6 +4,7 @@ import { bridge } from '../lib/api'
 import {
   IconCheck,
   IconCopy,
+  IconExpand,
   IconEye,
   IconEyeOff,
   IconPencil,
@@ -14,6 +15,9 @@ import {
 import { Pagination } from '../components/Pagination'
 import { useIntPref } from '../hooks/usePrefs'
 import { PREF_KEYS } from '../lib/prefs'
+// 用命名空间导入而不是逐个具名导入：表格每一行都有 `const editBlocked` /
+// `const fileBlocked` 这样的局部量，具名导入进来必然重名，靠作用域嵌套侥幸不冲突。
+import * as guards from '../lib/entry-guards'
 import type { Workspace } from '../hooks/useWorkspace'
 import type { ConfigEntryView, CredentialSuggestion, EnvFileView } from '@shared/ipc'
 import { VALUE_TYPES, type ValueType } from '@shared/env-types'
@@ -46,6 +50,13 @@ interface OverviewViewProps {
   onOpenDiff(file: EnvFileView): void
   onOpenTemplate(): void
   onDeleteEntry(entry: ConfigEntryView, expectedHash: string): void
+  onOpenEntryValue(
+    entry: ConfigEntryView,
+    expectedHash: string,
+    editBlockedReason: string | null,
+    /** 保存成功后调，用来作废本视图里那份已作废的明文缓存。 */
+    onSaved: () => void
+  ): void
   onExtractCredential(suggestion: CredentialSuggestion): void
   onVaultAction(): void
   showToast(message: string): void
@@ -60,6 +71,7 @@ export function OverviewView({
   onOpenDiff,
   onOpenTemplate,
   onDeleteEntry,
+  onOpenEntryValue,
   onExtractCredential,
   onVaultAction,
   showToast
@@ -195,46 +207,29 @@ export function OverviewView({
     showToast(`已复制到剪贴板，${seconds} 秒后自动清理（期间复制了别的就不动它）`)
   }
 
-  /**
-   * 这一条现在能不能就地改。
-   *
-   * 文件有未处理的外部改动时不给编辑入口 —— 这时候写回去等于替用户默默
-   * 选了 §6.4 的方向，把别人的修改覆盖掉。正确路径是先去差异面板选一个方向。
-   * 主进程侧同样会拦（那才是真正的守卫），这里只是别把用户引到死路上。
-   */
-  /**
-   * 文件层面挡住写入的原因。编辑和删除都受它约束。
-   *
-   * 注意这和「状态」列的 drifted 是同一件事，但和下面的"归凭据管"不是 ——
-   * 三个概念混成一个布尔值的话，一个归凭据管的变量会在状态列里
-   * 被显示成「有差异」，而它的文件其实好好的。
-   */
-  function fileBlockedReason(entry: ConfigEntryView): string | null {
-    const file = fileById.get(entry.fileId)
-    if (!file) return '找不到这个变量的来源文件记录'
-    if (file.currentHash === null) return '来源文件已从磁盘消失'
-    if (file.drifted) return '来源文件在外部被改过，请先在「文件健康度」里处理差异'
-    return null
-  }
+  // 守卫抽到了 lib/entry-guards.ts —— 行内编辑和弹窗编辑必须共用同一套判断。
+  // 这三个包装只是把 fileById 绑上去，行为和抽取前一模一样。
+  const fileBlockedReason = (entry: ConfigEntryView): string | null =>
+    guards.fileBlockedReason(entry, fileById)
+  const editBlockedReason = (entry: ConfigEntryView): string | null =>
+    guards.editBlockedReason(entry, fileById)
+  const expectedHashOf = (entry: ConfigEntryView): string | null =>
+    guards.expectedHashOf(entry, fileById)
 
   /**
-   * 编辑还多一条限制：🔴 归凭据管的变量真源在凭据那边，
-   * 就地改会造成两个真源。主进程侧同样会拒（那才是守卫），
-   * 这里只是别把用户引到死路上。
+   * 丢掉某一条的明文缓存，让它回到掩码态。
    *
-   * 删除**不受**这条限制 —— 变量真的要没了是合理的，
-   * 那时绑定会跟着一起解除。
+   * 🔴 值一改，手里这份明文就是**过期的**了 —— 留着的话表格会继续把旧值当成
+   * 「已显示」铺在屏幕上，用户看到的是一个磁盘上已经不存在的值。两个编辑入口
+   * （行内、弹窗）保存成功后都必须调它。
    */
-  function editBlockedReason(entry: ConfigEntryView): string | null {
-    if (entry.managedBy?.role === 'key') {
-      return `由凭据「${entry.managedBy.credentialName}」管理，请到「模型凭据」页修改后同步`
-    }
-    return fileBlockedReason(entry)
-  }
-
-  /** 用户看到这一行时文件的磁盘哈希，作为「我这个决定基于哪个版本」送给主进程。 */
-  function expectedHashOf(entry: ConfigEntryView): string | null {
-    return fileById.get(entry.fileId)?.currentHash ?? null
+  function forgetRevealed(entryId: number): void {
+    setRevealed((prev) => {
+      if (!prev.has(entryId)) return prev
+      const next = new Map(prev)
+      next.delete(entryId)
+      return next
+    })
   }
 
   function beginEdit(entry: ConfigEntryView): void {
@@ -262,19 +257,26 @@ export function OverviewView({
     }
 
     setEditing(null)
-    // 手里那份明文缓存已经作废，删掉它让这一行回到掩码态 ——
-    // 留着会显示一个已经不存在的旧值。
-    setRevealed((prev) => {
-      const next = new Map(prev)
-      next.delete(entry.id)
-      return next
-    })
+    forgetRevealed(entry.id)
     await workspace.reloadCurrent()
     showToast(
       result.data.written
         ? `已更新 ${entry.key} 并写回 ${entry.sourceFile}，原文件已备份`
         : '值没有变化，文件未改动'
     )
+  }
+
+  function requestValueModal(entry: ConfigEntryView): void {
+    const hash = expectedHashOf(entry)
+    // 文件都不在磁盘上了，弹窗里的「保存」不可能成立 —— 主进程要求
+    // expectedHash 是 64 位十六进制，不接受缺省。这条路直接不给开。
+    if (hash === null) {
+      showToast('来源文件已从磁盘消失，无法查看或修改')
+      return
+    }
+    // 弹窗保存成功后同样要作废这一条的明文缓存 —— 弹窗自己够不着这个 map，
+    // 所以把作废动作作为回调交给它。
+    onOpenEntryValue(entry, hash, editBlockedReason(entry), () => forgetRevealed(entry.id))
   }
 
   function requestDelete(entry: ConfigEntryView): void {
@@ -611,12 +613,31 @@ export function OverviewView({
                             <button
                               className="mini-btn"
                               data-action="edit"
-                              title={editBlocked ?? '编辑并写回文件'}
+                              title={editBlocked ?? '就地编辑并写回文件'}
                               aria-label={`编辑 ${entry.key}`}
                               disabled={editBlocked !== null}
                               onClick={() => beginEdit(entry)}
                             >
                               <IconPencil />
+                            </button>
+                            {/*
+                              🔴 新的 data-action，不能复用 "edit" ——
+                              verify-ui 靠 [data-action="edit"] 点行内编辑器。
+                              这个按钮不禁用：即使不可写也该能打开来看值，
+                              弹窗自己会变成只读并说明原因。
+                            */}
+                            <button
+                              className="mini-btn"
+                              data-action="edit-modal"
+                              title={
+                                editBlocked === null
+                                  ? '在弹窗里查看并修改（值长的时候用这个）'
+                                  : `查看值（${editBlocked}）`
+                              }
+                              aria-label={`在弹窗中查看 ${entry.key}`}
+                              onClick={() => requestValueModal(entry)}
+                            >
+                              <IconExpand />
                             </button>
                             <button
                               className="mini-btn danger"

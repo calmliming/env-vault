@@ -1109,6 +1109,236 @@ async function runChecks() {
     blocked.hint ?? ''
   )
 
+  // --- 值弹窗：第二条写盘入口 ------------------------------------------------
+  //
+  // 行内编辑器活在只有三成宽的值列里，一个连接串或私钥在那儿既读不了也改不了。
+  // 弹窗给的是完整宽度和多行。但它是**第二条写盘入口**，所以这一段要验的不是
+  // "弹窗能打开"，而是三件更要紧的事：
+  //   1. 盲写与留痕这套规矩在弹窗里原样成立（明文只能从 reveal 来）；
+  //   2. 它和行内入口对"能不能改"的结论一致 —— 两处各留一份守卫的话，早晚
+  //      出现「行内是灰的、弹窗却能点保存」这种自相矛盾的界面；
+  //   3. 保存之后表格不再拿旧明文当"已显示"铺在屏幕上。
+  const fixtureLocal = join(sandbox, 'fixture-project', '.env.local')
+  const MODAL_NEW_PASSWORD = 'x7Qv-3nP-longer-than-the-value-column-will-ever-show-0123456789'
+
+  const modalBlind = await evaluate(`(async () => {
+    const wait = (ms) => new Promise(r => setTimeout(r, ms));
+    const rowOf = (key) => [...document.querySelectorAll('.config-table tbody tr')]
+      .find(tr => tr.querySelector('.key-name')?.textContent.trim() === key);
+    const row = rowOf('DB_PASSWORD');
+    if (!row) return { missingRow: true };
+
+    row.querySelector('[data-action="edit-modal"]').click();
+    for (let i = 0; i < 40; i++) {
+      await wait(100);
+      if (document.querySelector('.value-textarea')) break;
+    }
+    await wait(150);
+
+    const area = document.querySelector('.value-textarea');
+    const blind = {
+      title: document.querySelector('#modal-title')?.textContent ?? '',
+      draft: area?.value ?? null,
+      readOnly: area?.readOnly ?? null,
+      submitDisabled: document.querySelector('.modal-actions .primary-btn')?.disabled ?? null,
+      bodyHasPassword: document.body.innerText.includes('pa#ss word')
+    };
+
+    // 点「显示原值」—— 这一下才是明文上屏的唯一合法路径，而且它会留痕。
+    document.querySelector('[data-action="modal-reveal"]').click();
+    for (let i = 0; i < 40; i++) {
+      await wait(100);
+      if (document.querySelector('.value-textarea')?.value) break;
+    }
+    blind.revealedDraft = document.querySelector('.value-textarea')?.value ?? '';
+
+    // 关掉它 —— 下面那段要从"表格里那一行已经显示着明文"这个起点重新进来。
+    [...document.querySelectorAll('.modal-actions button')]
+      .find(b => b.textContent.trim() === '取消')?.click();
+    for (let i = 0; i < 30; i++) {
+      await wait(100);
+      if (!document.querySelector('.modal-layer')) break;
+    }
+    return blind;
+  })()`, true)
+
+  check(
+    '🔴 值弹窗里敏感项默认是空的（盲写），原值没被带到屏幕上',
+    modalBlind.draft === '' && modalBlind.bodyHasPassword === false,
+    modalBlind.missingRow
+      ? '找不到 DB_PASSWORD 行'
+      : `草稿=${JSON.stringify(modalBlind.draft)} 页面含明文=${modalBlind.bodyHasPassword}`
+  )
+  check(
+    '空的值弹窗不能保存（空值不等于"清空"）',
+    modalBlind.submitDisabled === true && modalBlind.readOnly === false,
+    `submit disabled=${modalBlind.submitDisabled} readOnly=${modalBlind.readOnly}`
+  )
+  // 🔴 这条撑住上面那条：弹窗**够得着**原值，它一开始是空的才说明了问题。
+  // 没有它的话，一个"根本读不到值"的实现也能让盲写那条绿着过去。
+  check(
+    '🔴 点「显示原值」之后弹窗里确实拿到了明文',
+    modalBlind.revealedDraft === 'pa#ss word',
+    JSON.stringify(modalBlind.revealedDraft ?? null)
+  )
+
+  // 走完整条链：弹窗改值 → 真 IPC → 真磁盘。只看表格的话，一个"改了记录没写盘"
+  // 的实现照样能骗过去，所以下面回到 node 侧读 .env.local 的字节。
+  //
+  // 🔴 这一段**先在表格里点「显示」**再开弹窗，那不是顺手，是断言的起点：
+  // 表格自己存着一份「已显示」的明文缓存（revealed），而"保存之后旧明文不该
+  // 还留在屏幕上"这条只有在缓存里真的有东西时才够得着。不先让它上屏，
+  // 这条断言在有 bug 的实现上照样是绿的（实测过）。
+  const modalSave = await evaluate(`(async () => {
+    const wait = (ms) => new Promise(r => setTimeout(r, ms));
+    const rowOf = (key) => [...document.querySelectorAll('.config-table tbody tr')]
+      .find(tr => tr.querySelector('.key-name')?.textContent.trim() === key);
+
+    rowOf('DB_PASSWORD').querySelector('[data-action="reveal"]').click();
+    for (let i = 0; i < 40; i++) {
+      await wait(100);
+      if (rowOf('DB_PASSWORD')?.querySelector('.value')?.textContent.includes('pa#ss')) break;
+    }
+    const revealedBeforeSave = document.body.innerText.includes('pa#ss word');
+
+    rowOf('DB_PASSWORD').querySelector('[data-action="edit-modal"]').click();
+    for (let i = 0; i < 40; i++) {
+      await wait(100);
+      if (document.querySelector('.value-textarea')) break;
+    }
+    await wait(150);
+
+    const area = document.querySelector('.value-textarea');
+    const setter = Object.getOwnPropertyDescriptor(
+      window.HTMLTextAreaElement.prototype, 'value'
+    ).set;
+    setter.call(area, ${JSON.stringify(MODAL_NEW_PASSWORD)});
+    area.dispatchEvent(new Event('input', { bubbles: true }));
+    await wait(120);
+
+    document.querySelector('.modal-actions .primary-btn').click();
+    for (let i = 0; i < 40; i++) {
+      await wait(150);
+      if (!document.querySelector('.modal-layer')) break;
+    }
+    // 关闭之后还有一次 reloadCurrent 要落地。等回执出现再多给几帧，
+    // 但**不**去轮询"变成掩码了没有" —— 那样等于让断言自己等到自己想要的结果。
+    for (let i = 0; i < 30; i++) {
+      await wait(100);
+      if (document.querySelector('.toast')?.textContent.includes('DB_PASSWORD')) break;
+    }
+    await wait(400);
+
+    const cell = rowOf('DB_PASSWORD')?.querySelector('.value');
+    return {
+      revealedBeforeSave,
+      closed: !document.querySelector('.modal-layer'),
+      cellClass: cell?.className ?? '',
+      cellText: cell?.textContent.trim() ?? '',
+      bodyHasOldPassword: document.body.innerText.includes('pa#ss word'),
+      bodyHasNewPassword: document.body.innerText.includes(${JSON.stringify(MODAL_NEW_PASSWORD)})
+    };
+  })()`, true)
+
+  const localAfterModal = readFileSync(fixtureLocal, 'utf8')
+  // 起点断言：保存之前那一行确实把旧明文铺在屏幕上了。没有它，下面那条
+  // 「保存后旧明文不该还在」验的可能只是"它本来就不在"。
+  check(
+    '保存前表格里那一行确实显示着旧明文 —— 下一条才有意义',
+    modalSave.revealedBeforeSave === true,
+    `点「显示」后旧明文在屏幕上=${modalSave.revealedBeforeSave}`
+  )
+  check(
+    '🔴 弹窗里的保存真的落到了磁盘文件上',
+    modalSave.closed === true &&
+      localAfterModal.includes(MODAL_NEW_PASSWORD) &&
+      !localAfterModal.includes('pa#ss word'),
+    localAfterModal.split(/\r?\n/).find((l) => l.startsWith('DB_PASSWORD=')) ?? '（没有 DB_PASSWORD 行）'
+  )
+  // 🔴 保存之后那份明文就是过期的了。留着它，表格会继续把一个磁盘上已经不存在
+  // 的旧值当成「已显示」铺出来 —— 而且用户没有任何办法看出它是旧的。
+  check(
+    '🔴 弹窗保存后表格回到掩码态，旧明文和新值都不留在屏幕上',
+    modalSave.cellClass.includes('masked') &&
+      modalSave.bodyHasOldPassword === false &&
+      modalSave.bodyHasNewPassword === false,
+    `class=${modalSave.cellClass} 旧值在屏幕上=${modalSave.bodyHasOldPassword} 新值在屏幕上=${modalSave.bodyHasNewPassword}`
+  )
+
+  // 🔴 两个入口必须给出同一个结论。BRAND_NEW 归凭据管，行内编辑按钮上面
+  // （:553）已经验过是禁用的；弹窗**照样能打开**（看值是合理的），但必须是只读的
+  // 并说明原因。能打开一个能点保存的弹窗，等于给主进程那道守卫留了一条死路。
+  const modalReadOnly = await evaluate(`(async () => {
+    const wait = (ms) => new Promise(r => setTimeout(r, ms));
+    const row = [...document.querySelectorAll('.config-table tbody tr')]
+      .find(tr => tr.querySelector('.key-name')?.textContent.trim() === 'BRAND_NEW');
+    if (!row) return { missingRow: true };
+
+    const inlineDisabled = row.querySelector('[data-action="edit"]').disabled;
+    row.querySelector('[data-action="edit-modal"]').click();
+    for (let i = 0; i < 40; i++) {
+      await wait(100);
+      if (document.querySelector('.value-textarea')) break;
+    }
+    await wait(150);
+
+    const result = {
+      inlineDisabled,
+      readOnly: document.querySelector('.value-textarea')?.readOnly ?? null,
+      hasSubmit: !!document.querySelector('.modal-actions .primary-btn'),
+      reason: document.querySelector('.modal-body')?.innerText ?? ''
+    };
+    [...document.querySelectorAll('.modal-actions button')]
+      .find(b => b.textContent.trim() === '关闭')?.click();
+    for (let i = 0; i < 30; i++) {
+      await wait(100);
+      if (!document.querySelector('.modal-layer')) break;
+    }
+    result.closed = !document.querySelector('.modal-layer');
+    return result;
+  })()`, true)
+
+  check(
+    '🔴 归凭据管的变量：行内和弹窗给的是同一个结论（都不让改）',
+    modalReadOnly.inlineDisabled === true &&
+      modalReadOnly.readOnly === true &&
+      modalReadOnly.hasSubmit === false,
+    modalReadOnly.missingRow
+      ? '找不到 BRAND_NEW 行'
+      : `行内禁用=${modalReadOnly.inlineDisabled} 弹窗只读=${modalReadOnly.readOnly} 有保存按钮=${modalReadOnly.hasSubmit}`
+  )
+  check(
+    '只读的弹窗说明了为什么，并且关得掉',
+    modalReadOnly.reason.includes('模型凭据') && modalReadOnly.closed === true,
+    `${modalReadOnly.reason.split('\n').find((l) => l.includes('凭据')) ?? modalReadOnly.reason} / closed=${modalReadOnly.closed}`
+  )
+
+  // 🔴 来源文件已经不在磁盘上时（STAGE 的 .env.staging 就是这样），弹窗根本
+  // 不该打开：主进程要求 expectedHash 是 64 位十六进制、不接受缺省，所以那个
+  // 弹窗里的「保存」不可能成立。开一个注定被拒的弹窗比直说更糟。
+  const modalNoFile = await evaluate(`(async () => {
+    const wait = (ms) => new Promise(r => setTimeout(r, ms));
+    const row = [...document.querySelectorAll('.config-table tbody tr')]
+      .find(tr => tr.querySelector('.key-name')?.textContent.trim() === 'STAGE');
+    if (!row) return { missingRow: true };
+    row.querySelector('[data-action="edit-modal"]').click();
+    for (let i = 0; i < 20; i++) {
+      await wait(100);
+      if (document.querySelector('.toast') || document.querySelector('.modal-layer')) break;
+    }
+    await wait(200);
+    return {
+      opened: !!document.querySelector('.modal-layer'),
+      toast: document.querySelector('.toast')?.textContent.trim() ?? ''
+    };
+  })()`, true)
+
+  check(
+    '🔴 来源文件已消失时值弹窗不开，而是直说原因',
+    modalNoFile.opened === false && modalNoFile.toast.includes('已从磁盘消失'),
+    modalNoFile.missingRow ? '找不到 STAGE 行' : `打开了=${modalNoFile.opened} 回执=${modalNoFile.toast}`
+  )
+
   // 删除：确认框 → 表格里的行消失 → 文件里的那一行也消失。
   //
   // 到这一步 BRAND_NEW 已经被上面那段提取成凭据并绑定了，所以这里顺带验到

@@ -13,6 +13,7 @@ import { CredentialModal } from './modals/CredentialModal'
 import { CredentialSyncModal } from './modals/CredentialSyncModal'
 import { DeleteEntryModal } from './modals/DeleteEntryModal'
 import { DiffModal } from './modals/DiffModal'
+import { EntryValueModal } from './modals/EntryValueModal'
 import { NoticeModal } from './modals/NoticeModal'
 import { ProjectModal } from './modals/ProjectModal'
 import { SearchModal } from './modals/SearchModal'
@@ -252,6 +253,36 @@ function Workspace(): ReactNode {
     [openModal, showToast, workspace]
   )
 
+  const openEntryValue = useCallback(
+    (
+      entry: ConfigEntryView,
+      expectedHash: string,
+      editBlockedReason: string | null,
+      onSaved: () => void
+    ) => {
+      openModal({
+        kicker: editBlockedReason === null ? '查看并修改' : '查看值',
+        title: entry.key,
+        render: ({ close }) => (
+          <EntryValueModal
+            close={close}
+            showToast={showToast}
+            entry={entry}
+            expectedHash={expectedHash}
+            editBlockedReason={editBlockedReason}
+            onSaved={() => {
+              // 调用方那边要作废的东西（明文缓存）它自己最清楚，先让它做。
+              onSaved()
+              // 值变了会连带改写文件哈希，条目和文件都要重拉。
+              void workspace.reloadCurrent()
+            }}
+          />
+        )
+      })
+    },
+    [openModal, showToast, workspace]
+  )
+
   const openSync = useCallback(() => {
     openModal({
       kicker: '外部修改',
@@ -388,6 +419,7 @@ function Workspace(): ReactNode {
               onOpenDiff={openDiff}
               onOpenTemplate={openTemplate}
               onDeleteEntry={openDeleteEntry}
+              onOpenEntryValue={openEntryValue}
               onExtractCredential={(suggestion) =>
                 workspace.selectedProject &&
                 openCredential({ projectId: workspace.selectedProject.id, suggestion })
