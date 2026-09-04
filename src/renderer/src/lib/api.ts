@@ -85,7 +85,8 @@ export const bridge = {
   copyCredentialKey: (credentialId: number) =>
     call(() => window.envvault.copyCredentialKey(credentialId)),
   scanSecurity: (projectId: number) => call(() => window.envvault.scanSecurity(projectId)),
-  listActivity: (limit?: number) => call(() => window.envvault.listActivity(limit)),
+  listActivity: (limit?: number, offset?: number) =>
+    call(() => window.envvault.listActivity(limit, offset)),
 
   // --- .env.example 生成（阶段 5b）---
   previewTemplate: (fileId: number) => call(() => window.envvault.previewTemplate(fileId)),

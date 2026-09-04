@@ -1221,36 +1221,59 @@ export function logActivity(input: ActivityInput): void {
     )
 }
 
-export function listActivity(limit = 50): ActivityRecord[] {
-  return getDatabase()
-    .prepare(
-      `SELECT a.id, a.action, a.environment, a.target_kind, a.target_ref, a.detail, a.created_at,
-              p.name AS project_name
-       FROM activity_log a
-       LEFT JOIN projects p ON p.id = a.project_id
-       ORDER BY a.created_at DESC, a.id DESC
-       LIMIT ?`
-    )
-    .all<{
-      id: number
-      action: string
-      environment: string | null
-      target_kind: string | null
-      target_ref: string | null
-      detail: string | null
-      created_at: number
-      project_name: string | null
-    }>(Math.min(Math.max(limit, 1), 500))
-    .map((row) => ({
-      id: row.id,
-      action: row.action,
-      projectName: row.project_name,
-      environment: row.environment,
-      targetKind: row.target_kind,
-      targetRef: row.target_ref,
-      detail: row.detail,
-      createdAt: row.created_at
-    }))
+/**
+ * 分页读操作记录。
+ *
+ * 🔴 总数和这一页必须在**同一个事务**里查。
+ *
+ * 界面拿 total 算总页数、拿 records 渲染当前页。两次独立查询之间只要有一条
+ * 新记录写进来（而这个应用几乎每个动作都写审计），用户就会看到「共 94 条」
+ * 配着一页按 93 条切出来的数据 —— 最后一页可能是空的。读事务把两次查询
+ * 钉在同一个快照上。
+ *
+ * limit 仍然夹在 [1,500]：这是防手滑的护栏，不是业务规则。
+ */
+export function listActivity(limit = 50, offset = 0): { records: ActivityRecord[]; total: number } {
+  const db = getDatabase()
+  const safeLimit = Math.min(Math.max(limit, 1), 500)
+  const safeOffset = Math.max(offset, 0)
+
+  return db.transaction(() => {
+    const total =
+      db.prepare('SELECT COUNT(*) AS n FROM activity_log').get<{ n: number }>()?.n ?? 0
+
+    const records = db
+      .prepare(
+        `SELECT a.id, a.action, a.environment, a.target_kind, a.target_ref, a.detail, a.created_at,
+                p.name AS project_name
+         FROM activity_log a
+         LEFT JOIN projects p ON p.id = a.project_id
+         ORDER BY a.created_at DESC, a.id DESC
+         LIMIT ? OFFSET ?`
+      )
+      .all<{
+        id: number
+        action: string
+        environment: string | null
+        target_kind: string | null
+        target_ref: string | null
+        detail: string | null
+        created_at: number
+        project_name: string | null
+      }>(safeLimit, safeOffset)
+      .map((row) => ({
+        id: row.id,
+        action: row.action,
+        projectName: row.project_name,
+        environment: row.environment,
+        targetKind: row.target_kind,
+        targetRef: row.target_ref,
+        detail: row.detail,
+        createdAt: row.created_at
+      }))
+
+    return { records, total }
+  })
 }
 
 // ---------------------------------------------------------------------------

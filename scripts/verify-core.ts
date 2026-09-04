@@ -466,7 +466,7 @@ async function run(): Promise<void> {
   const inline = repo.revealEntry(byKey.get('LOG_LEVEL')!.id)
   check('行内注释没有进入值', inline.value === 'debug', JSON.stringify(inline.value))
 
-  const revealLog = repo.listActivity(100).filter((r) => r.action === 'entry.reveal')
+  const revealLog = repo.listActivity(100).records.filter((r) => r.action === 'entry.reveal')
   check('每次 reveal 都留了记录', revealLog.length === 4, `记录 ${revealLog.length} 条`)
   check(
     '🔴 操作记录里不含明文值',
@@ -1128,6 +1128,7 @@ async function run(): Promise<void> {
   // --- 操作记录：有痕迹，但没有值 -------------------------------------------
   const mutationLog = repo
     .listActivity(200)
+    .records
     .filter((r) => r.action === 'entry.update' || r.action === 'entry.delete')
   check(
     '编辑与删除都留了操作记录',
@@ -1815,7 +1816,7 @@ async function run(): Promise<void> {
     '主进程直接写剪贴板，明文不为了复制而过桥'
   )
 
-  const copyLog = repo.listActivity(300).filter((r) => r.action === 'credential.copy')
+  const copyLog = repo.listActivity(300).records.filter((r) => r.action === 'credential.copy')
   check(
     '🔴 复制留了独立的记录（和「显示」分开），且不含 Key',
     copyLog.length === 1 && !JSON.stringify(copyLog).includes('sk-ant-'),
@@ -1827,12 +1828,12 @@ async function run(): Promise<void> {
   check(
     '配置项的复制走同一条路，记 entry.copy',
     fakeClipboard.content === 'pa#ss word' &&
-      repo.listActivity(300).some((r) => r.action === 'entry.copy'),
+      repo.listActivity(300).records.some((r) => r.action === 'entry.copy'),
     '两侧同一个模块'
   )
   check(
     '🔴 复制的操作记录里没有值',
-    !JSON.stringify(repo.listActivity(300).filter((r) => r.action.endsWith('.copy'))).includes(
+    !JSON.stringify(repo.listActivity(300).records.filter((r) => r.action.endsWith('.copy'))).includes(
       'pa#ss'
     ),
     '只记 key 名与倒计时'
@@ -1877,7 +1878,7 @@ async function run(): Promise<void> {
   )
 
   // --- 🔴 一次注入只记一条，且只有变量名 ------------------------------------
-  const injectLog = repo.listActivity(300).filter((r) => r.action === 'cli.inject')
+  const injectLog = repo.listActivity(300).records.filter((r) => r.action === 'cli.inject')
   check(
     '🔴 一次注入记一条操作记录，detail 里只有变量名',
     injectLog.length === 1 &&
@@ -1945,6 +1946,7 @@ async function run(): Promise<void> {
   // --- 🔴 凭据相关的记录里同样没有明文 --------------------------------------
   const credentialLog = repo
     .listActivity(300)
+    .records
     .filter((r) => r.action.startsWith('credential.'))
   check(
     '凭据的增删改绑同步与验证都留了记录',

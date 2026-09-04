@@ -112,6 +112,14 @@ function asPositiveInt(value: unknown, field: string): number {
   return value
 }
 
+/** 分页的 offset 从 0 起，用不了 asPositiveInt（那个要求 > 0）。 */
+function asNonNegativeInt(value: unknown, field: string): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+    throw new RepositoryError('INTERNAL', `参数 ${field} 必须是不小于 0 的整数`)
+  }
+  return value
+}
+
 /**
  * 路径校验（§3.2「IPC 参数进行类型、路径和权限校验」）。
  *
@@ -707,7 +715,11 @@ export function registerIpcHandlers(): void {
 
   handle(CHANNELS.activityList, (request) => {
     const body = asRecord(request ?? {})
-    const limit = typeof body.limit === 'number' ? body.limit : 50
-    return repo.listActivity(limit)
+    // 原来是 `typeof body.limit === 'number'`，0、负数和小数都能过。
+    // 仓储层的钳制兜住了后果，但校验本该在这一层做完 —— 和别的通道一致。
+    const limit = body.limit === undefined ? 50 : asPositiveInt(body.limit, 'limit')
+    // offset 用 0 起，所以不能用 asPositiveInt（它要求 > 0）。
+    const offset = body.offset === undefined ? 0 : asNonNegativeInt(body.offset, 'offset')
+    return repo.listActivity(limit, offset)
   })
 }

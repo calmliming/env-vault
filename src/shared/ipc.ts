@@ -340,6 +340,22 @@ export interface ActivityRecord {
   createdAt: number
 }
 
+/**
+ * 分页读操作记录的结果。
+ *
+ * 带 `total` 而不是只回一页，是因为界面要算总页数、要说「共 N 条」。
+ * 早先这个通道直接回 `ActivityRecord[]`，界面只好把「最近 N 条」绑在
+ * `records.length` 上 —— 那个数在到达上限之前一直是对的，到了上限就开始
+ * 撒谎，而且没有任何办法知道后面还有多少。
+ *
+ * 两个数由主进程在同一个读事务里查出来，见 repositories.listActivity。
+ */
+export interface ActivityPage {
+  records: ActivityRecord[]
+  /** 库里的总条数，不受 limit/offset 影响。 */
+  total: number
+}
+
 export type DiffStatus = 'unchanged' | 'changed' | 'added' | 'removed'
 
 export interface FileDiffRow {
@@ -979,7 +995,10 @@ export interface IpcContract {
     }
     response: ImportResult
   }
-  [CHANNELS.activityList]: { request: { limit?: number }; response: ActivityRecord[] }
+  [CHANNELS.activityList]: {
+    request: { limit?: number; offset?: number }
+    response: ActivityPage
+  }
 }
 
 export type IpcRequest<C extends ChannelName> = IpcContract[C]['request']
@@ -1123,7 +1142,7 @@ export interface EnvVaultApi {
     credentialNames: string[]
   }): Promise<IpcResult<ImportResult>>
 
-  listActivity(limit?: number): Promise<IpcResult<ActivityRecord[]>>
+  listActivity(limit?: number, offset?: number): Promise<IpcResult<ActivityPage>>
   /**
    * 订阅文件变化推送。返回退订函数。
    *

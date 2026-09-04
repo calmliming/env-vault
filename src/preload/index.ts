@@ -15,7 +15,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 import {
   CHANNELS,
   PUSH_CHANNELS,
-  type ActivityRecord,
+  type ActivityPage,
   type AdoptResult,
   type BulkImportResult,
   type DiscoveryPreview,
@@ -177,8 +177,8 @@ const api: EnvVaultApi = {
     ipcRenderer.invoke(CHANNELS.securityScan, { projectId }) as Promise<
       IpcResult<SecurityReport>
     >,
-  listActivity: (limit?: number) =>
-    ipcRenderer.invoke(CHANNELS.activityList, { limit }) as Promise<IpcResult<ActivityRecord[]>>,
+  listActivity: (limit?: number, offset?: number) =>
+    ipcRenderer.invoke(CHANNELS.activityList, { limit, offset }) as Promise<IpcResult<ActivityPage>>,
   diffFile: (fileId: number) =>
     ipcRenderer.invoke(CHANNELS.filesDiff, { fileId }) as Promise<IpcResult<FileDiff>>,
   adoptDiskFile: (fileId: number) =>

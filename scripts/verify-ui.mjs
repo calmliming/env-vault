@@ -1256,7 +1256,24 @@ async function runChecks() {
       await wait(100);
       if (document.querySelectorAll('.activity-item').length > 0) break;
     }
+    // 下面几条验的是「审计日志记下了这些动作类型」，是数据断言 ——
+    // 而这一页从阶段 7 起是分页的，默认每页 20 装不下全部记录。
+    // 先把每页选到最大，让所有记录都渲染出来，断言的含义不受影响。
+    const sizeSelect = document.querySelector('.pagination-size select');
+    if (sizeSelect) {
+      const largest = [...sizeSelect.options].map(o => Number(o.value)).sort((a, b) => b - a)[0];
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set;
+      setter.call(sizeSelect, String(largest));
+      sizeSelect.dispatchEvent(new Event('change', { bubbles: true }));
+      for (let i = 0; i < 30; i++) {
+        await wait(100);
+        if (document.querySelectorAll('.activity-item').length > 20) break;
+      }
+    }
     return {
+      pageSize: sizeSelect ? Number(sizeSelect.value) : null,
+      total: document.querySelector('.panel-title')?.textContent.trim() ?? '',
+      range: document.querySelector('.pagination-range')?.textContent.trim() ?? '',
       count: document.querySelectorAll('.activity-item').length,
       labels: [...document.querySelectorAll('.activity-copy strong')].map(el => el.textContent.trim()),
       bodyHasSecret: document.body.innerText.includes(${JSON.stringify(FIXTURE_SECRET)})
@@ -1264,6 +1281,13 @@ async function runChecks() {
   })()`, true)
 
   check('操作记录有真实条目', activity.count > 0, `${activity.count} 条`)
+  check(
+    '操作记录分页：总数、区间与每页条数都对得上',
+    activity.range.includes(`共 ${activity.count} 条`) &&
+      activity.total.includes(`共 ${activity.count} 条`) &&
+      activity.pageSize >= activity.count,
+    `${activity.total} / ${activity.range} / 每页 ${activity.pageSize}`
+  )
   check(
     '记录包含导入、扫描、显示、编辑与删除动作',
     ['导入项目', '重新扫描', '显示敏感值', '编辑变量', '删除变量'].every((label) =>

@@ -11,6 +11,9 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import { bridge } from '../lib/api'
+import { Pagination } from '../components/Pagination'
+import { useIntPref } from '../hooks/usePrefs'
+import { PREF_KEYS } from '../lib/prefs'
 import { RISK_ORDER } from '@shared/security-types'
 import type { RiskLevel } from '@shared/security-types'
 import type {
@@ -221,26 +224,64 @@ function RiskRow({ file }: { file: FileRisk }): ReactNode {
   )
 }
 
+/**
+ * 操作记录的每页条数。
+ *
+ * 默认 20 —— 审计流水是拿来一条条读的，不是拿来滚的。
+ *
+ * ⚠️ verify-ui 有几条断言要从渲染出来的条目里收集动作标签（「导入项目」
+ * 「加密导出」这些），而最老的那条在种子数据里排在第 90 位往后。那些断言
+ * 验的是「审计日志记下了这些动作类型」，属于数据断言 —— 所以脚本里是先把
+ * 每页选到最大再读标签，而不是让这里迁就它给一个 100 的默认值。
+ */
+const ACTIVITY_PAGE_SIZES = [20, 50, 100, 200] as const
+const ACTIVITY_PAGE_SIZE_DEFAULT = 20
+
 export function ActivityView(): ReactNode {
   const [records, setRecords] = useState<ActivityRecord[]>([])
+  const [total, setTotal] = useState(0)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useIntPref(
+    PREF_KEYS.activityPageSize,
+    ACTIVITY_PAGE_SIZE_DEFAULT,
+    ACTIVITY_PAGE_SIZES
+  )
 
+  /**
+   * 🔴 这一页是服务端分页，和变量表那边不一样。
+   *
+   * 变量表的数据本来就全量在内存里，切片是白送的；操作记录是只增不减的
+   * 审计流水，几万条也不奇怪，全量拉过来只为了显示 20 条是在浪费内存和
+   * 序列化时间。所以翻页真的会重新查一次。
+   */
   const load = useCallback(async () => {
     setLoading(true)
-    const result = await bridge.listActivity(100)
+    const result = await bridge.listActivity(pageSize, (page - 1) * pageSize)
     if (result.ok) {
-      setRecords(result.data)
+      setRecords(result.data.records)
+      setTotal(result.data.total)
       setError(null)
     } else {
       setError(result.message)
     }
     setLoading(false)
-  }, [])
+  }, [page, pageSize])
 
   useEffect(() => {
     void load()
   }, [load])
+
+  /*
+   * 删项目会连带删掉它的记录（activity_log.project_id 是 SET NULL，
+   * 但别的路径会真删），停在最后一页时总数缩水就会翻到一个空页。
+   * 总数变了就把越界的页码拨回最后一页。
+   */
+  const pageCount = Math.max(1, Math.ceil(total / pageSize))
+  useEffect(() => {
+    if (page > pageCount) setPage(pageCount)
+  }, [page, pageCount])
 
   return (
     <section>
@@ -264,7 +305,7 @@ export function ActivityView(): ReactNode {
         </div>
       )}
 
-      {!error && records.length === 0 && !loading && (
+      {!error && total === 0 && !loading && (
         <div className="empty-section">
           <h2>暂无记录</h2>
           <p>导入项目、重新扫描或显示敏感值时，这里会留下一条不含明文的记录。</p>
@@ -275,7 +316,12 @@ export function ActivityView(): ReactNode {
         <section className="panel activity-panel">
           <div className="panel-head">
             <div>
-              <div className="panel-title">最近 {records.length} 条</div>
+              {/*
+                标题说的是**总数**，不再是 records.length。
+                后者绑的是「这一页有几条」—— 没分页的时候它碰巧等于总数，
+                到达上限之后就开始撒谎，而且没有任何办法知道后面还有多少。
+              */}
+              <div className="panel-title">共 {total} 条</div>
               <div className="panel-kicker">target 只记 key 名与路径，不含值</div>
             </div>
           </div>
@@ -297,6 +343,19 @@ export function ActivityView(): ReactNode {
               </div>
             ))}
           </div>
+
+          <Pagination
+            page={page}
+            pageSize={pageSize}
+            total={total}
+            pageSizeOptions={ACTIVITY_PAGE_SIZES}
+            onPageChange={setPage}
+            onPageSizeChange={(size) => {
+              setPageSize(size)
+              setPage(1)
+            }}
+            label="操作记录"
+          />
         </section>
       )}
     </section>
